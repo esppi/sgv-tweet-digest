@@ -1,0 +1,30 @@
+# systemd USER unit TEMPLATE — feedback loop: build per-archetype profile, then roll up reliability.
+#
+# NEW unit (was not in the original deployment). Runs AFTER the digest so it sees the day's drafts.
+# Two ExecStart lines run in order (Type=oneshot): feedback_profile.py then steering_analyzer.py.
+#
+# Install: see deploy/README.md. Copy to ~/.config/systemd/user/, then
+#   systemctl --user daemon-reload && systemctl --user enable --now sgv-feedback-profile.timer
+#
+# Both scripts need ANTHROPIC_API_KEY (feedback_profile.py calls Sonnet; steering_analyzer.py is
+# stdlib-only but reads the same feedback.db). EnvironmentFile must define SKILL_DIR + VENV_PYTHON.
+# %h expands to your home directory.
+
+[Unit]
+Description=SGV Tweet Digest — feedback profile + steering reliability rollup (after the digest)
+After=network-online.target sgv-tweet-digest.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=TZ=UTC
+EnvironmentFile=%h/.config/sgv-tweet-digest/env
+WorkingDirectory=%h
+ExecStart=${VENV_PYTHON} ${SKILL_DIR}/scripts/feedback_profile.py
+ExecStart=${VENV_PYTHON} ${SKILL_DIR}/scripts/steering_analyzer.py
+StandardOutput=append:%h/.local/state/sgv-tweet-digest/feedback-profile.log
+StandardError=append:%h/.local/state/sgv-tweet-digest/feedback-profile.log
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target

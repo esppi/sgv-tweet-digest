@@ -1,0 +1,13 @@
+# systemd USER timer TEMPLATE — Stage A runs daily at 12:45 UTC (15 min before the digest).
+# Install: see deploy/README.md.
+
+[Unit]
+Description=SGV Tweet Digest — owned-reads X API gather, daily at 12:45 UTC (15 min before digest)
+
+[Timer]
+OnCalendar=*-*-* 12:45:00 UTC
+Persistent=true
+Unit=sgv-owned-reads-gather.service
+
+[Install]
+WantedBy=timers.target

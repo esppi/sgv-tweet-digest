@@ -1,0 +1,51 @@
+# anonymize_denylist.example.txt
+# ---------------------------------------------------------------------------
+# EXAMPLE denylist for the insights pass (scripts/insights.py).
+#
+# insights.py reads fund-internal sources (Notion deal funnel, Gmail weekly
+# memos, Fireflies transcripts) and must NEVER let a non-public company,
+# founder, or deal term leak into a drafted tweet. This file maps each
+# sensitive term to a neutral category label; the drafter substitutes the
+# label so the public output stays anonymized.
+#
+# HOW THE LOADER WORKS
+#   insights.py loads your REAL anonymize_denylist.txt if it exists, and falls
+#   back to THIS .example file otherwise. So this template just needs valid,
+#   parseable lines for the skill to run end-to-end out of the box.
+#
+# YOUR REAL FILE
+#   - Create anonymize_denylist.txt (same format as below) with the actual
+#     names you need stripped.
+#   - It is GITIGNORED and must NEVER be committed — it is the master list of
+#     everything you do not want public.
+#   - Keep it OUT of the repo / share it privately (see SECRETS-TO-SHARE.md).
+#
+# FORMAT
+#   One mapping per line:   <term> -> [<neutral category label>]
+#   '#' starts a comment. Blank lines are ignored. Matching is case-insensitive.
+#   The label keeps the tweet readable while hiding the specific identity.
+#
+# NOTE: every entry below is a MADE-UP placeholder for illustration only.
+#       Replace them all in your real file.
+# ---------------------------------------------------------------------------
+
+# --- Companies / projects (invented examples) ---
+AcmeChain -> [a crypto infra startup]
+Globex Capital -> [a crypto fund]
+ExampleProtocol -> [a DeFi protocol]
+Initech Pay -> [a payments company]
+Umbrella Labs -> [a research lab]
+Wonka Wallet -> [a consumer wallet app]
+Hooli Network -> [an L1 network]
+Stark Markets -> [a prediction-markets startup]
+
+# --- People / founders (invented examples) ---
+Jane Doe -> [a founder]
+John Q. Public -> [a founder]
+Pat Sample -> [an operator]
+Alex Placeholder -> [an angel investor]
+
+# --- Deal / round shorthand (invented examples) ---
+Project Falcon -> [an in-flight deal]
+The Bluebird Round -> [a financing round]
+SPV Example One -> [an investment vehicle]

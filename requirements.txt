@@ -1,0 +1,29 @@
+# sgv-tweet-digest — Python dependencies
+# Install LOCALLY into a venv (or with pip --user) — never globally:
+#   python3 -m venv ~/.local/share/sgv-tweet-digest/venv
+#   ~/.local/share/sgv-tweet-digest/venv/bin/pip install -r requirements.txt
+# Point VENV_PYTHON (see .env.example) at that venv's python3.
+
+# --- Required (the core digest) ---
+anthropic            # Opus + Sonnet API calls (scoring, drafting, insights, feedback)
+telethon==1.43.1     # Telegram user-session client (reads Saved Messages / gc: DMs, sends to the fund group)
+
+# --- OPTIONAL: only for the always-on good-content poller (good_content_poll.py) ---
+# The core digest does NOT need these. Install them only if you run the `gc:` link poller.
+trafilatura          # article text extraction (optional Python import; the poller degrades to
+#                      metadata-only extraction if it's absent — only article bodies need it).
+
+# --- NOT pip-installable (provide separately) ---
+# yt-dlp        : OPTIONAL, good-content poller ONLY. A binary on PATH (resolved from YTDLP_BIN),
+#                 used via subprocess by good_content_poll.py for YouTube links. Install from
+#                 https://github.com/yt-dlp/yt-dlp (e.g. brew install yt-dlp). The poller falls
+#                 back to oEmbed (title/author only) for YouTube if yt-dlp is missing.
+# gog           : OPTIONAL Gmail CLI used by insights.py for the weekly-memo source.
+#                 The Gmail source is skipped if gog is absent.
+#
+# --- Vendored in-repo (no install needed) ---
+# notion_client : a minimal Notion client ships at scripts/notion_client.py (stdlib-only — urllib,
+#                 not the PyPI `notion-client` package). Adds NO dependency.
+#
+# The gatherers (gather_x.py, our_tweets_fetcher.py) and steering_analyzer.py are
+# stdlib-only and run on system python3.

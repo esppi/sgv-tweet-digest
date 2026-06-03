@@ -1,0 +1,27 @@
+# systemd USER unit TEMPLATE — Stage A: gather X Lists tweets + following snapshot.
+#
+# Install: see deploy/README.md. Copy to ~/.config/systemd/user/, then
+#   systemctl --user daemon-reload && systemctl --user enable --now sgv-owned-reads-gather.timer
+#
+# gather_x.py is STDLIB-ONLY by design, so it can run on your SYSTEM python (no venv needed).
+# Set SYSTEM_PYTHON in the EnvironmentFile (e.g. /usr/bin/python3). If you prefer, point it at
+# ${VENV_PYTHON} instead — both work. The EnvironmentFile must also define SKILL_DIR and the
+# X_* secret env vars (see .env.example). %h expands to your home directory.
+
+[Unit]
+Description=SGV Tweet Digest — Stage A: owned-reads X API gather (Lists + following)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=TZ=UTC
+EnvironmentFile=%h/.config/sgv-tweet-digest/env
+WorkingDirectory=%h
+ExecStart=${SYSTEM_PYTHON} ${SKILL_DIR}/scripts/gather_x.py
+StandardOutput=append:%h/.local/state/sgv-tweet-digest/owned-reads-gather.log
+StandardError=append:%h/.local/state/sgv-tweet-digest/owned-reads-gather.log
+TimeoutStartSec=600
+
+[Install]
+WantedBy=default.target

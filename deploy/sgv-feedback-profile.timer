@@ -1,0 +1,14 @@
+# systemd USER timer TEMPLATE — feedback loop runs daily at 13:30 UTC (~30 min after the digest).
+# NEW unit (was not in the original deployment). Pairs with sgv-feedback-profile.service.
+# Install: see deploy/README.md.
+
+[Unit]
+Description=SGV Tweet Digest — feedback profile + steering rollup, daily at 13:30 UTC (after digest)
+
+[Timer]
+OnCalendar=*-*-* 13:30:00 UTC
+Persistent=true
+Unit=sgv-feedback-profile.service
+
+[Install]
+WantedBy=timers.target

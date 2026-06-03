@@ -1,0 +1,33 @@
+# systemd USER unit TEMPLATE — always-on poller for "gc: <url>" links you flag in Telegram.
+#
+# NEW unit (was not in the original deployment). This is the ALWAYS-ON mode (Type=simple): the
+# poller stays connected to Telegram and ingests "gc: <url>" messages from your Saved Messages and
+# bot DM in real time, writing good_content rows for the digest's section 3.
+#
+# Install (always-on mode): see deploy/README.md. Copy to ~/.config/systemd/user/, then
+#   systemctl --user daemon-reload && systemctl --user enable --now sgv-good-content-poll.service
+#
+# ALTERNATIVE (every-~10-min polling instead of always-on): change Type=simple to Type=oneshot
+# and enable sgv-good-content-poll.timer instead of this service directly. See deploy/README.md.
+#
+# Needs the Telethon-capable VENV_PYTHON. EnvironmentFile must define SKILL_DIR + VENV_PYTHON +
+# TELEGRAM_API_ID/API_HASH/SESSION/BOT_TOKEN. %h expands to your home directory.
+
+[Unit]
+Description=SGV Tweet Digest — always-on "gc: <url>" good-content Telegram poller
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=TZ=UTC
+EnvironmentFile=%h/.config/sgv-tweet-digest/env
+WorkingDirectory=%h
+ExecStart=${VENV_PYTHON} ${SKILL_DIR}/scripts/good_content_poll.py
+Restart=on-failure
+RestartSec=30
+StandardOutput=append:%h/.local/state/sgv-tweet-digest/good-content-poll.log
+StandardError=append:%h/.local/state/sgv-tweet-digest/good-content-poll.log
+
+[Install]
+WantedBy=default.target

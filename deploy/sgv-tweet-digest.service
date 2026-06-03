@@ -1,0 +1,29 @@
+# systemd USER unit TEMPLATE — Stage C: score + draft + deliver the dual-voice digest.
+#
+# Install: see deploy/README.md. Copy to ~/.config/systemd/user/, then
+#   systemctl --user daemon-reload && systemctl --user enable --now sgv-tweet-digest.timer
+#
+# This is the main entrypoint. It needs the Telethon-capable VENV_PYTHON (it sends Telegram
+# messages and reads the news channel). The EnvironmentFile must define SKILL_DIR, VENV_PYTHON,
+# and all the secret env vars (ANTHROPIC_API_KEY, X_*, TELEGRAM_*); plus the OPTIONAL Gmail vars
+# (GMAIL_ACCOUNT, SGV_ADMIN_EMAIL) if you enable the insights Gmail source — these used to live in
+# a separate gog env file and now fold into this one EnvironmentFile. See .env.example.
+# %h expands to your home directory.
+
+[Unit]
+Description=SGV Tweet Digest — Stage C: daily dual-voice digest (score + draft + deliver) at 13:00 UTC
+After=network-online.target sgv-owned-reads-gather.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=TZ=UTC
+EnvironmentFile=%h/.config/sgv-tweet-digest/env
+WorkingDirectory=%h
+ExecStart=${VENV_PYTHON} ${SKILL_DIR}/scripts/digest.py
+StandardOutput=append:%h/.local/state/sgv-tweet-digest/digest.log
+StandardError=append:%h/.local/state/sgv-tweet-digest/digest.log
+TimeoutStartSec=600
+
+[Install]
+WantedBy=default.target

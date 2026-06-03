@@ -1,0 +1,13 @@
+# systemd USER timer TEMPLATE — Stage C runs daily at 13:00 UTC (9am ET).
+# Install: see deploy/README.md.
+
+[Unit]
+Description=SGV Tweet Digest — runs daily at 13:00 UTC (9am ET)
+
+[Timer]
+OnCalendar=*-*-* 13:00:00 UTC
+Persistent=true
+Unit=sgv-tweet-digest.service
+
+[Install]
+WantedBy=timers.target

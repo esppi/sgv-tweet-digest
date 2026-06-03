@@ -1,0 +1,17 @@
+# systemd USER timer TEMPLATE — ALTERNATIVE every-~10-min polling mode for the good-content ingester.
+#
+# NEW unit (was not in the original deployment). Use this ONLY if you prefer periodic polling over
+# the always-on sgv-good-content-poll.service. For this timer to work you MUST first edit
+# sgv-good-content-poll.service to set Type=oneshot (so each run exits) instead of Type=simple, and
+# do NOT enable that service directly — enable this timer instead. See deploy/README.md.
+
+[Unit]
+Description=SGV Tweet Digest — poll for "gc: <url>" good-content links every ~10 minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/10:00 UTC
+Persistent=false
+Unit=sgv-good-content-poll.service
+
+[Install]
+WantedBy=timers.target

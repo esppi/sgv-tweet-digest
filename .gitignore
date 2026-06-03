@@ -1,0 +1,40 @@
+# sgv-tweet-digest — keep secrets and per-user state OUT of the public repo.
+
+# --- Secrets / credentials ---
+.env
+.env.*
+!.env.example
+**/.api_key
+**/secrets/
+**/*_api_key
+**/x-cookies.json
+**/*cookies*
+**/*oauth*
+twitter_oauth2.json
+**/*.token
+**/*.session
+**/*.session-journal
+**/*.session*
+
+# --- The PRIVATE credential-handoff doc (never publish) ---
+SECRETS-TO-SHARE.md
+
+# --- The user's real config (only the .example ships) ---
+config.json
+!config.example.json
+
+# --- The REAL anonymize denylist (only the .example ships) ---
+anonymize_denylist.txt
+!anonymize_denylist.example.txt
+
+# --- Per-user runtime state / generated data ---
+*.db
+*.log
+latest.json
+state.json
+stats.jsonl
+insights_snapshot_*.json
+
+# --- Python ---
+__pycache__/
+*.pyc

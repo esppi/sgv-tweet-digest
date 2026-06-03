@@ -1,0 +1,28 @@
+# systemd USER unit TEMPLATE — Stage B: snapshot our own tweets' metrics into feedback.db.
+#
+# Install: see deploy/README.md. Copy to ~/.config/systemd/user/, then
+#   systemctl --user daemon-reload && systemctl --user enable --now sgv-our-tweets-fetcher.timer
+#
+# The EnvironmentFile below must define at least:
+#   SKILL_DIR    = absolute path to your installed skill (e.g. %h/.claude/skills/sgv-tweet-digest)
+#   VENV_PYTHON  = absolute path to the Telethon-capable venv python (e.g. %h/.local/share/sgv-tweet-digest/venv/bin/python3)
+# plus the secret env vars the scripts read (ANTHROPIC_API_KEY, X_BEARER_TOKEN, X_OAUTH2_*, etc.).
+# See .env.example for the full list. %h expands to your home directory.
+
+[Unit]
+Description=SGV Tweet Digest — Stage B: fetch our own tweets (fund + personal) + metrics into feedback.db
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=TZ=UTC
+EnvironmentFile=%h/.config/sgv-tweet-digest/env
+WorkingDirectory=%h
+ExecStart=${VENV_PYTHON} ${SKILL_DIR}/scripts/our_tweets_fetcher.py --budget 0.20
+StandardOutput=append:%h/.local/state/sgv-tweet-digest/our-tweets-fetcher.log
+StandardError=append:%h/.local/state/sgv-tweet-digest/our-tweets-fetcher.log
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target
