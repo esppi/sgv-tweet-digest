@@ -18,6 +18,12 @@ Credentials (all from the environment — nothing hardcoded):
   X_OAUTH2_TOKEN_FILE     where the refreshed OAuth2 token blob is persisted
                           (default under XDG state; seeded from the env vars above
                            on first run)
+  SGV_X_READ_BACKEND      optional: x (default when X creds exist), hermes, xquik,
+                          or auto. Auto uses Hermes Tweet/Xquik only when X creds
+                          are absent and HERMES_TWEET_API_KEY/XQUIK_API_KEY exists.
+  HERMES_TWEET_API_KEY    optional Hermes Tweet/Xquik API key for read fallback
+  XQUIK_API_KEY           accepted alias for HERMES_TWEET_API_KEY
+  HERMES_TWEET_BASE_URL   optional API base URL (XQUIK_BASE_URL alias)
 
 Operational config (non-secret) is read from a JSON file:
   SGV_CONFIG              path to the operator's config copy (canonical name, shared
@@ -32,6 +38,13 @@ Stdlib-only — runs fine on system python.
 """
 
 import argparse, json, os, sys, time, datetime, urllib.parse, urllib.request, urllib.error
+
+from hermes_tweet_client import (
+    fetch_hermes_following,
+    fetch_hermes_list_members,
+    fetch_hermes_list_tweets,
+    hermes_read_backend_enabled,
+)
 
 
 def _state_base():
@@ -128,6 +141,18 @@ def _actual_cost(url, n_resources_returned):
 
 
 _BEARER_CACHED = None
+
+
+def _has_x_credentials():
+    return bool(os.environ.get("X_BEARER_TOKEN") or os.environ.get("X_OAUTH2_REFRESH_TOKEN"))
+
+
+def _use_hermes_reads():
+    return hermes_read_backend_enabled(_has_x_credentials())
+
+
+def _read_backend_label():
+    return "hermes-tweet" if _use_hermes_reads() else "x-api"
 
 
 def bearer_token():
@@ -314,12 +339,16 @@ def _seed_oauth2_token_file():
 
 def _can_afford(state, url, n_resources=None):
     """True if `url` (with at most n_resources items) won't push past the daily cap."""
+    if _use_hermes_reads():
+        return True
     cost = _estimate_cost(url, n_resources=n_resources)
     return state.get("cost_today_usd", 0.0) + cost <= BUDGET_USD_PER_DAY
 
 
 def _record_actual(state, url, n_resources_returned):
     """Increment cost tracker using ACTUAL resources returned. Call after a successful call."""
+    if _use_hermes_reads():
+        return 0.0
     cost = _actual_cost(url, n_resources_returned)
     state["cost_today_usd"] = round(state.get("cost_today_usd", 0.0) + cost, 5)
     return cost
@@ -552,6 +581,12 @@ def fetch_list_memberships(config):
 
 def fetch_list_members(list_id):
     """Prefer app-only Bearer (500/15min cap) over OAuth user-context (75/15min)."""
+    if _use_hermes_reads():
+        try:
+            return fetch_hermes_list_members(list_id), 1
+        except Exception as e:
+            print("    [hermes members error] " + str(e))
+            return [], 0
     url = "https://api.x.com/2/lists/" + list_id + "/members"
     params = {
         "max_results": "100",
@@ -576,6 +611,12 @@ def fetch_list_tweets(list_id, max_results=100, since_id=None):
     by tweet_id across successive runs.
     Prefers app-only Bearer; falls back to OAuth on Bearer 401/403.
     """
+    if _use_hermes_reads():
+        try:
+            return fetch_hermes_list_tweets(list_id, max_results=max_results), 1
+        except Exception as e:
+            print("    [hermes list tweets error] " + str(e))
+            return [], 0
     url = "https://api.x.com/2/lists/" + list_id + "/tweets"
     params = {
         "max_results": str(max_results),
@@ -594,6 +635,15 @@ def fetch_list_tweets(list_id, max_results=100, since_id=None):
 
 def fetch_following(config):
     """The operator's follow graph. Bearer first, OAuth fallback."""
+    if _use_hermes_reads():
+        try:
+            return fetch_hermes_following(
+                config["personal_user_id"],
+                max_results=FOLLOWING_MAX_RESULTS,
+            ), 1
+        except Exception as e:
+            print("    [hermes following error] " + str(e))
+            return [], 0
     url = "https://api.x.com/2/users/" + config["personal_user_id"] + "/following"
     params = {
         "max_results": str(FOLLOWING_MAX_RESULTS),
@@ -645,6 +695,7 @@ def main():
     print("   personal:    @" + config["personal_username"] + " (" + config["personal_user_id"] + ")")
     print("   sgv:         @" + config["sgv_username"] + " (" + config["sgv_user_id"] + ")")
     print("   dry-run:     " + str(args.dry_run))
+    print("   read backend:" + " " + _read_backend_label())
     print("   budget cap:  $" + str(BUDGET_USD_PER_DAY) + "/day  (used so far: $" + str(round(state["cost_today_usd"], 4)) + ")")
 
     output = {
@@ -692,7 +743,9 @@ def main():
     # ─────────────────────────────────────────────
     probe_url = "https://api.x.com/2/users/me"
     print("  [P1] credits probe...")
-    if _afford(probe_url)[0]:
+    if _use_hermes_reads():
+        print("    -> skipped (Hermes Tweet/Xquik read backend)")
+    elif _afford(probe_url)[0]:
         import urllib.request as _ur, urllib.error as _ue
         req = _ur.Request(probe_url, headers={"Authorization": "Bearer " + bearer_token()})
         try:

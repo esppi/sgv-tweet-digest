@@ -82,6 +82,9 @@ feedback feedback_profile.py + steering_analyzer.py  ──▶ tunes the next ru
   - An **X / Twitter developer app**: an app **Bearer token** plus an **OAuth2** client authorized
     against **your own** `@handle` (app-only auth 403s on reading Lists / following, so a user token
     is required).
+    - Optional for public reads: a **Hermes Tweet / Xquik API key** can power the public List,
+      following, and user-timeline reads when `SGV_X_READ_BACKEND=hermes` (or when `auto` finds no
+      X credentials). Keep X OAuth2 for private or OAuth-only X workflows.
   - **Telegram**: an `api_id` / `api_hash` from [my.telegram.org](https://my.telegram.org), a one-time
     **Telethon user session** login, and a **bot** from [@BotFather](https://t.me/BotFather).
 - **Optional** (the fund-internal insights pass; each is skipped if unconfigured): a **Notion**
@@ -199,6 +202,9 @@ The canonical names. Every script, the `.env.example`, and the deploy templates 
 | `X_OAUTH2_CLIENT_SECRET` | conditional | secret | OAuth2 Basic-auth secret (confidential clients; optional for public clients). |
 | `X_OAUTH2_REFRESH_TOKEN` | yes | secret | Mints user tokens to read your Lists / following / own timeline. |
 | `X_OAUTH2_TOKEN_FILE` | no | not secret | Where the refreshed OAuth2 token blob is stored (seeded from the vars above). |
+| `SGV_X_READ_BACKEND` | no | not secret | `auto`, `x`, `hermes`, or `xquik`. X API remains default; Hermes/Xquik can power public reads. |
+| `HERMES_TWEET_API_KEY` / `XQUIK_API_KEY` | conditional | secret | Required only when using the Hermes Tweet / Xquik read backend. |
+| `HERMES_TWEET_BASE_URL` / `XQUIK_BASE_URL` | no | not secret | Optional API base override; defaults to `https://xquik.com`. |
 | `TELEGRAM_API_ID` | yes | secret | Telethon application id (my.telegram.org). |
 | `TELEGRAM_API_HASH` | yes | secret | Telethon application hash (my.telegram.org). |
 | `TELEGRAM_SESSION` | yes | secret | Path to your Telethon user session file. **Never shared.** |
