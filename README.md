@@ -17,6 +17,8 @@ Each run produces, **per voice** (a fund voice and a personal voice):
   scored 0–18 on a transparent heuristic, with a one-line "why" and a suggested angle.
 - **2 original tweet ideas** in that voice.
 - **1 quote-tweet idea** off one of the surfaced posts.
+- **Up to 3 hot non-crypto QTs** (AI / tech / VC) — if you category-tag extra Lists in config,
+  the hottest non-crypto tweets get their own 🔥 block with a QT draft per voice.
 
 Delivery is split by voice:
 

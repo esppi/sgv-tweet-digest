@@ -846,9 +846,10 @@ def main():
         else:
             print(f"      members: cached ({len(members)}, age {members_age:.1f}d)")
 
-        # Tweets: always try to fetch (the high-value signal). max_results=10 is the new default.
+        # Tweets: always try to fetch (the high-value signal). Depth is per-list
+        # (flow-tuned): config max_tweets, else the module default.
         tweets_url = "https://api.x.com/2/lists/" + lid + "/tweets"
-        max_tweets = LIST_TWEETS_MAX_RESULTS
+        max_tweets = int(lst.get("max_tweets") or LIST_TWEETS_MAX_RESULTS)
         ok, reason = _afford(tweets_url, n_resources=max_tweets)
         if not ok:
             _skip(f"tweets[{lname}]", reason)
@@ -856,10 +857,20 @@ def main():
         tweets, _ = fetch_list_tweets(lid, max_results=max_tweets)
         actual = _spent(tweets_url, len(tweets))
         output["stats"]["api_calls"] += 1
+        # Author allowlist (noise gate): we already paid for what X returned,
+        # but only allowlisted authors enter the candidate pool.
+        allow = lst.get("author_allowlist") or []
+        if allow:
+            allowset = {a.lstrip("@").lower() for a in allow}
+            n_before = len(tweets)
+            tweets = [t for t in tweets
+                      if t.get("account", "").lstrip("@").lower() in allowset]
+            print(f"      allowlist: kept {len(tweets)}/{n_before}")
         for t in tweets:
             t["from_list_id"] = lid
             t["from_list_name"] = lst.get("name")
             t["from_list_kind"] = kind
+            t["from_list_category"] = lst.get("category") or "crypto"
         output[output_field].append({
             "list_id": lid,
             "name": lst.get("name"),
@@ -883,9 +894,20 @@ def main():
     # config knob are kept available in case you want to re-enable them.
     configured = config.get("followed_list_ids", []) or []
     print(f"  [P3] followed_lists from config ({len(configured)})...")
+    # Per-entry optional fields:
+    #   category         "crypto" (default) | "ai" | "tech" | "vc" — routes the tweet
+    #                    into the digest's crypto core vs the non-crypto QT lane
+    #   max_tweets       per-list fetch depth (default LIST_TWEETS_MAX_RESULTS);
+    #                    flow-tuned: ~10 for slow curated lists, ~30 for firehoses
+    #   author_allowlist keep only these @handles' tweets (noise gate for firehoses)
+    # Order the config crypto-first: the budget cap skips lists in CONFIG ORDER,
+    # so on a cap day the lanes at the end die first.
     flists = [{
         "id": e["id"], "name": e.get("name"), "description": "",
         "private": False, "member_count": None, "owner_id": e.get("owner"),
+        "category": e.get("category") or "crypto",
+        "max_tweets": e.get("max_tweets"),
+        "author_allowlist": e.get("author_allowlist"),
         "_source": "config",
     } for e in configured]
     for idx, lst in enumerate(flists):

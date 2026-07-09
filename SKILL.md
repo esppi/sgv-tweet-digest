@@ -1,6 +1,6 @@
 ---
 name: sgv-tweet-digest
-version: 0.1.1
+version: 0.2.0
 description: >-
   Drafts a daily dual-voice crypto-Twitter digest from your X follow-graph and
   curated Lists: scores candidate tweets with a metrics-first 0-18 rubric, picks
@@ -91,13 +91,17 @@ This is what `/sgv-tweet-digest` runs. It:
    via `${CLAUDE_SKILL_DIR}/scripts/telegram/read.py` for market context.
 2. **Scores** every candidate with the metrics-first **0-18 rubric** and keeps the top
    `candidate_count` (config) for the model. Full rubric: [reference/rubric.md](reference/rubric.md).
-3. **Picks + drafts (Opus)** — selects the top 3 tweets to engage (one action each, with
-   variety constraints) and writes, **per voice**, 2 original tweets + 1 quote-tweet idea.
+3. **Picks + drafts (Opus)** — selects the top 3 crypto tweets to engage (one action each,
+   with variety constraints) and writes, **per voice**, 2 original tweets + 1 quote-tweet idea.
    The two voices must cover different angles. See [reference/voice-guide.md](reference/voice-guide.md).
+   If any Lists are category-tagged `ai`/`tech`/`vc` in config, Opus also picks **up to 3 hot
+   non-crypto QTs** (shared picks, one draft per voice each) delivered as a separate 🔥 block.
 4. **Insight ideas (Sonnet, optional)** — `scripts/insights.py` distills the last 7 days of
    fund-internal data into up to 3 anonymized drafts per voice. Each source (Notion / Gmail /
    Fireflies) runs only when configured and is skipped with a logged note otherwise; a failure
-   here is non-fatal.
+   here is non-fatal. Anti-repetition is built in: recently-featured Notion deals rotate out
+   (3-run cooldown), the last 7 runs' insights are injected as a DO-NOT-REPEAT block, and the
+   day's top-20 timeline tweets are added as public context for fresh angles (`timeline[i]` refs).
 5. **Good-content ideas (Sonnet, personal voice only)** — `scripts/good_content.py` drafts from
    URLs you flagged via the `gc:` Telegram poller (rows in `feedback.db`).
 6. **Delivers** (see below) and **logs** `stats.jsonl` + saves every drafted idea to
