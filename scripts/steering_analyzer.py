@@ -388,14 +388,21 @@ def run(verbose=True):
 
     profiles = c.execute("""
         SELECT * FROM feedback_profiles
-        ORDER BY id DESC LIMIT 2
+        ORDER BY id DESC LIMIT 3
     """).fetchall()
     if not profiles:
         log("  no feedback_profiles yet — nothing to analyze")
         return None
 
-    today = dict(profiles[0])
-    prior = dict(profiles[1]) if len(profiles) >= 2 else None
+    # profiles[0] was created by feedback_profile.py MOMENTS ago (same systemd
+    # unit) — no ideas can be tagged with it until tomorrow's digest, so measuring
+    # it yields ideas_under_profile=0 and ±1.0 compliance noise. Measure the
+    # PREVIOUS profile — the one that actually governed today's drafted ideas.
+    if len(profiles) < 2:
+        log("  only the just-created profile exists — nothing measurable yet (come back tomorrow)")
+        return None
+    today = dict(profiles[1])
+    prior = dict(profiles[2]) if len(profiles) >= 3 else None
     for p in (today, prior):
         if not p:
             continue
@@ -406,11 +413,11 @@ def run(verbose=True):
                 except Exception:
                     p[k.replace("_json", "")] = None
 
-    log(f"  today's profile: id={today['id']} generated={today['generated_at'][:19]}")
+    log(f"  measured profile: id={today['id']} generated={today['generated_at'][:19]} (the one today's ideas ran under)")
     if prior:
-        log(f"  prior profile:   id={prior['id']} generated={prior['generated_at'][:19]}")
+        log(f"  prior profile:    id={prior['id']} generated={prior['generated_at'][:19]}")
     else:
-        log("  prior profile:   (none — this is the first profile)")
+        log("  prior profile:    (none — this is the first measurable profile)")
 
     metrics = compute_steering(today, prior, c)
 

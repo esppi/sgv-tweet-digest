@@ -22,11 +22,12 @@ Credentials (all from the environment — nothing hardcoded):
 Operational config (non-secret) is read from a JSON file:
   SGV_CONFIG              path to the operator's config copy (canonical name, shared
                           with digest.py; SGV_DIGEST_CONFIG is a legacy fallback alias)
-                          (default: $XDG_CONFIG_HOME/sgv-tweet-digest/config.json;
-                           falls back to the shipped config.example.json)
+                          (default: $XDG_CONFIG_HOME/sgv-tweet-digest/config.json, then
+                           <skill_dir>/config.json, then the shipped config.example.json)
 
-Output: $XDG_DATA_HOME/sgv-tweet-digest/owned-reads/latest.json
-State:  $XDG_DATA_HOME/sgv-tweet-digest/owned-reads/state.json
+Output: $XDG_DATA_HOME/sgv-tweet-digest/latest.json   (the same file digest.py reads;
+        override with SGV_OWNED_READS — honored by both sides so they stay in sync)
+State:  $XDG_DATA_HOME/sgv-tweet-digest/state.json
 
 Stdlib-only — runs fine on system python.
 """
@@ -42,31 +43,38 @@ def _state_base():
 
 
 def _config_path():
-    """Resolve the operator's config: $SGV_CONFIG (canonical, shared with digest.py),
-    then $SGV_DIGEST_CONFIG (legacy alias), else XDG config, else the shipped
-    config.example.json at the repo root."""
+    """Resolve the operator's config — the ONE canonical chain shared by every loader:
+    $SGV_CONFIG ($SGV_DIGEST_CONFIG legacy alias) -> $XDG_CONFIG_HOME/sgv-tweet-digest/
+    config.json -> <skill_dir>/config.json (the README quickstart copy) -> the shipped
+    config.example.json."""
     explicit = os.environ.get("SGV_CONFIG") or os.environ.get("SGV_DIGEST_CONFIG")
     if explicit:
-        return explicit
+        explicit = os.path.expanduser(os.path.expandvars(explicit))
+        if os.path.exists(explicit):
+            return explicit
     cfg_base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
         os.path.expanduser("~"), ".config"
     )
     candidate = os.path.join(cfg_base, "sgv-tweet-digest", "config.json")
     if os.path.exists(candidate):
         return candidate
-    # Fall back to the shipped example (repo root, two levels up from scripts/)
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    local = os.path.join(repo_root, "config.json")
+    if os.path.exists(local):
+        return local
     return os.path.join(repo_root, "config.example.json")
 
 
-OWNED_DIR    = os.path.join(_state_base(), "owned-reads")
-OUTPUT_PATH  = os.path.join(OWNED_DIR, "latest.json")
-STATE_PATH   = os.path.join(OWNED_DIR, "state.json")
+STATE_DIR    = _state_base()
+# Written exactly where digest.py reads it (SGV_OWNED_READS honored on both sides).
+OUTPUT_PATH  = os.path.expanduser(os.path.expandvars(
+    os.environ.get("SGV_OWNED_READS") or os.path.join(STATE_DIR, "latest.json")))
+STATE_PATH   = os.path.join(STATE_DIR, "state.json")
 CONFIG_PATH  = _config_path()
-OAUTH2_PATH  = os.environ.get(
-    "X_OAUTH2_TOKEN_FILE", os.path.join(_state_base(), "twitter_oauth2.json")
-)
-BUDGET_USD_PER_DAY = 1.00      # hard cap; gather skips calls that would push past this
+OAUTH2_PATH  = os.path.expanduser(os.path.expandvars(
+    os.environ.get("X_OAUTH2_TOKEN_FILE")
+    or os.path.join(STATE_DIR, "twitter_oauth2.json")))
+BUDGET_USD_PER_DAY = 1.00      # default hard cap; overridden by config daily_x_cost_cap_usd (see main)
 LIST_TWEETS_MAX_RESULTS = 10   # 50 was burning $0.25/list at $0.005/tweet -> drop to 10 = $0.05/list
 # Members fetch is now SKIPPED by default (digest doesn't consume members data,
 # and 100 users x $0.001 x 15 lists = $1.50/refresh-day blows the budget).
@@ -225,13 +233,13 @@ def xapi(url, params=None):
     backoff = 30
     for attempt in range(3):
         try:
-            resp = urllib.request.urlopen(req)
+            resp = urllib.request.urlopen(req, timeout=60)
             _record_rate_headers(url, resp.headers)
             return json.loads(resp.read()), int(resp.headers.get("x-rate-limit-remaining", 0))
         except urllib.error.HTTPError as e:
             _record_rate_headers(url, e.headers)
             if e.code == 429:
-                retry_after = int(e.headers.get("Retry-After", str(backoff)))
+                retry_after = min(int(e.headers.get("Retry-After", str(backoff))), 300)
                 print("    [429] sleeping " + str(retry_after) + "s (attempt " + str(attempt+1) + "/3)")
                 time.sleep(retry_after)
                 backoff = min(backoff * 2, 300)
@@ -339,49 +347,72 @@ def _days_since_iso(iso_str):
         return 1e9
 
 
-def _oauth2_access_token():
+def _needs_refresh(tok, force):
+    if force:
+        return True
+    exp = datetime.datetime.fromisoformat(tok["expires_at_utc"].rstrip("Z"))
+    return exp - datetime.datetime.utcnow() < datetime.timedelta(minutes=5)
+
+
+def _oauth2_access_token(force_refresh=False):
     """Read user token, refresh if near expiry, return access_token or None.
     Supports both public (Native) and confidential clients — confidential clients
     authenticate the refresh request via HTTP Basic with client_id:client_secret.
 
     The token blob is persisted at X_OAUTH2_TOKEN_FILE and is seeded from the
     X_OAUTH2_* env vars on first run.
+
+    Cross-process safe: X ROTATES the refresh token on every use and revokes on
+    reuse, and three independently scheduled scripts share this file — so the
+    refresh + persist happens under an exclusive file lock, re-reading the blob
+    after acquiring it in case another process refreshed while we waited.
+
+    force_refresh=True refreshes even if the access token looks unexpired
+    (used by callers that just got a 401 on a supposedly-valid token).
     """
-    import base64 as _b64
+    import base64 as _b64, fcntl as _fcntl
     _seed_oauth2_token_file()
     if not os.path.exists(OAUTH2_PATH):
         return None
     try:
         with open(OAUTH2_PATH) as f:
             tok = json.load(f)
-        exp = datetime.datetime.fromisoformat(tok["expires_at_utc"].rstrip("Z"))
-        if exp - datetime.datetime.utcnow() < datetime.timedelta(minutes=5):
-            body = urllib.parse.urlencode({
-                "grant_type": "refresh_token",
-                "refresh_token": tok["refresh_token"],
-                "client_id": tok["client_id"],
-            }).encode()
-            headers = {"Content-Type": "application/x-www-form-urlencoded"}
-            secret = tok.get("client_secret")
-            if secret:
-                basic = _b64.b64encode((tok["client_id"] + ":" + secret).encode()).decode()
-                headers["Authorization"] = "Basic " + basic
-            req = urllib.request.Request(
-                "https://api.x.com/2/oauth2/token", data=body, headers=headers,
-            )
-            r = json.loads(urllib.request.urlopen(req).read())
-            tok["access_token"] = r["access_token"]
-            tok["refresh_token"] = r.get("refresh_token", tok["refresh_token"])
-            tok["expires_at_utc"] = (
-                datetime.datetime.utcnow()
-                + datetime.timedelta(seconds=r["expires_in"])
-            ).isoformat() + "Z"
-            tmp = OAUTH2_PATH + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump(tok, f, indent=2)
-            os.chmod(tmp, 0o600)
-            os.rename(tmp, OAUTH2_PATH)
-            print("  refreshed OAuth2 token (expires " + tok["expires_at_utc"] + ")")
+        if _needs_refresh(tok, force_refresh):
+            with open(OAUTH2_PATH + ".lock", "w") as lk:
+                _fcntl.flock(lk, _fcntl.LOCK_EX)
+                try:
+                    # Re-read: another process may have refreshed while we waited.
+                    with open(OAUTH2_PATH) as f:
+                        tok = json.load(f)
+                    if _needs_refresh(tok, force_refresh):
+                        body = urllib.parse.urlencode({
+                            "grant_type": "refresh_token",
+                            "refresh_token": tok["refresh_token"],
+                            "client_id": tok["client_id"],
+                        }).encode()
+                        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+                        secret = tok.get("client_secret")
+                        if secret:
+                            basic = _b64.b64encode((tok["client_id"] + ":" + secret).encode()).decode()
+                            headers["Authorization"] = "Basic " + basic
+                        req = urllib.request.Request(
+                            "https://api.x.com/2/oauth2/token", data=body, headers=headers,
+                        )
+                        r = json.loads(urllib.request.urlopen(req, timeout=30).read())
+                        tok["access_token"] = r["access_token"]
+                        tok["refresh_token"] = r.get("refresh_token", tok["refresh_token"])
+                        tok["expires_at_utc"] = (
+                            datetime.datetime.utcnow()
+                            + datetime.timedelta(seconds=r["expires_in"])
+                        ).isoformat() + "Z"
+                        tmp = OAUTH2_PATH + ".tmp"
+                        with open(tmp, "w") as f:
+                            json.dump(tok, f, indent=2)
+                        os.chmod(tmp, 0o600)
+                        os.rename(tmp, OAUTH2_PATH)
+                        print("  refreshed OAuth2 token (expires " + tok["expires_at_utc"] + ")")
+                finally:
+                    _fcntl.flock(lk, _fcntl.LOCK_UN)
         return tok["access_token"]
     except Exception as e:
         print("  OAuth2 token error: " + str(e))
@@ -399,13 +430,13 @@ def _xapi_user(url, token, params=None):
     backoff = 30
     for attempt in range(3):
         try:
-            resp = urllib.request.urlopen(req)
+            resp = urllib.request.urlopen(req, timeout=60)
             _record_rate_headers(url, resp.headers)
             return json.loads(resp.read())
         except urllib.error.HTTPError as e:
             _record_rate_headers(url, e.headers)
             if e.code == 429:
-                retry_after = int(e.headers.get("Retry-After", str(backoff)))
+                retry_after = min(int(e.headers.get("Retry-After", str(backoff))), 300)
                 print("    [429 user-ctx] sleeping " + str(retry_after) + "s (attempt " + str(attempt+1) + "/3)")
                 time.sleep(retry_after)
                 backoff = min(backoff * 2, 300)
@@ -629,9 +660,14 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="No writes; print counts only")
     args = parser.parse_args()
 
-    os.makedirs(OWNED_DIR, exist_ok=True)
+    global BUDGET_USD_PER_DAY
+    os.makedirs(os.path.dirname(OUTPUT_PATH) or ".", exist_ok=True)
+    os.makedirs(STATE_DIR, exist_ok=True)
     config = load_config()
     state = load_state()
+
+    # Money guardrail from config (documented knob; falls back to the hardcoded default).
+    BUDGET_USD_PER_DAY = float(config.get("daily_x_cost_cap_usd", BUDGET_USD_PER_DAY))
 
     today = datetime.datetime.utcnow().strftime("%Y-%m-%d")
     if state.get("api_calls_day") != today:
@@ -680,6 +716,10 @@ def main():
         """After a successful call, charge the ACTUAL resources returned."""
         actual = _record_actual(state, url, n_resources_returned)
         output["stats"]["estimated_cost_usd"] = state["cost_today_usd"]
+        # Persist immediately: a mid-run crash must not forfeit recorded spend
+        # (a stale tracker lets the next run overshoot the daily cap).
+        if not args.dry_run:
+            save_state(state)
         return actual
 
     def _skip(priority_label, reason):
@@ -696,7 +736,7 @@ def main():
         import urllib.request as _ur, urllib.error as _ue
         req = _ur.Request(probe_url, headers={"Authorization": "Bearer " + bearer_token()})
         try:
-            r = _ur.urlopen(req)
+            r = _ur.urlopen(req, timeout=30)
             r.read()
             _spent(probe_url, 1)  # /me returns single user, flat cost
             print("    -> ok (cost so far: $" + str(round(state["cost_today_usd"], 4)) + ")")

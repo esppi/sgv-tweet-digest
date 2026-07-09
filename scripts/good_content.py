@@ -38,10 +38,19 @@ def _state_dir():
     return os.path.join(base, "sgv-tweet-digest")
 
 
+def _env_path(name, default):
+    """Env-sourced path with $VAR/~ expansion (systemd EnvironmentFile does not
+    expand $HOME — a literal '$HOME/...' value must still resolve here)."""
+    v = os.environ.get(name)
+    if not v:
+        return default
+    return os.path.expanduser(os.path.expandvars(v))
+
+
 def _voice_profiles_path():
     """Resolve voice_profiles.json: $SGV_VOICE_PROFILES -> <state>/ -> shipped seed."""
     for p in (
-        os.environ.get("SGV_VOICE_PROFILES"),
+        _env_path("SGV_VOICE_PROFILES", None),
         os.path.join(_state_dir(), "voice_profiles.json"),
         os.path.join(_skill_dir(), "voice_profiles.json"),
     ):
@@ -51,9 +60,16 @@ def _voice_profiles_path():
 
 
 def _load_app_config():
+    """Load the operator's config.json — the ONE canonical chain shared by every
+    loader: $SGV_CONFIG -> $XDG_CONFIG_HOME/sgv-tweet-digest/config.json ->
+    <skill_dir>/config.json (the README quickstart copy) -> the shipped example."""
+    cfg_base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+        os.path.expanduser("~"), ".config"
+    )
     for p in (
-        os.environ.get("SGV_CONFIG"),
-        os.path.join(_state_dir(), "config.json"),
+        _env_path("SGV_CONFIG", None),
+        os.path.join(cfg_base, "sgv-tweet-digest", "config.json"),
+        os.path.join(_skill_dir(), "config.json"),
         os.path.join(_skill_dir(), "config.example.json"),
     ):
         if p and os.path.exists(p):

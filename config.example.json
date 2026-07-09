@@ -27,17 +27,16 @@
     "Example Topic B"
   ],
 
-  "_models_comment": "Anthropic model ids the pipeline calls. Opus does the high-stakes scoring + draft selection; Sonnet does the insights pass, good-content drafting, and feedback profile. Override here if you want different model versions; the ANTHROPIC_API_KEY itself lives in .env.",
+  "_models_comment": "Anthropic model ids the pipeline calls. Opus does the high-stakes scoring + draft selection; Sonnet does the insights pass, good-content drafting, idea matching, and feedback profile. Override here if you want different model versions; the ANTHROPIC_API_KEY itself lives in .env.",
   "models": {
-    "opus": "claude-opus-4-1",
+    "opus": "claude-opus-4-7",
     "sonnet": "claude-sonnet-4-5"
   },
 
-  "_budget_comment": "Cost guardrails. daily_x_cost_cap_usd is the hard ceiling Stage A (gather_x.py) enforces on paid X API spend per day. anthropic_budget_usd is the soft per-run Anthropic spend the digest aims to stay under.",
+  "_budget_comment": "Cost guardrail: the hard ceiling gather_x.py enforces on paid X API spend per day (calls that would push past it are skipped, config-order).",
   "daily_x_cost_cap_usd": 1.0,
-  "anthropic_budget_usd": 0.5,
 
-  "_scoring_comment": "Heuristic scoring knobs. score_threshold = minimum 0-18 heuristic score for a gathered tweet to be considered for the top-3 engage list. candidate_count = how many top-scoring candidates to hand to Opus for the final pick.",
+  "_scoring_comment": "Heuristic scoring knobs (digest.py). candidate_count = how many top-scoring candidates to hand to Opus for the final pick. score_threshold = optional minimum 0-18 heuristic score for the candidate pool (softly enforced: skipped for the run if it would leave fewer than top_n tweets; set 0 to disable).",
   "score_threshold": 8,
   "candidate_count": 30
 }

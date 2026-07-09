@@ -47,9 +47,18 @@ def _state_dir():
     return os.path.join(base, "sgv-tweet-digest")
 
 
+def _env_path(name, default):
+    """Env-sourced path with $VAR/~ expansion (systemd EnvironmentFile does not
+    expand $HOME — a literal '$HOME/...' value must still resolve here)."""
+    v = os.environ.get(name)
+    if not v:
+        return default
+    return os.path.expanduser(os.path.expandvars(v))
+
+
 def _voice_profiles_path():
     for p in (
-        os.environ.get("SGV_VOICE_PROFILES"),
+        _env_path("SGV_VOICE_PROFILES", None),
         os.path.join(_state_dir(), "voice_profiles.json"),
         os.path.join(_skill_dir(), "voice_profiles.json"),
     ):
@@ -65,7 +74,7 @@ def _denylist_path():
       -> <skill>/anonymize_denylist.txt -> <skill>/anonymize_denylist.example.txt
     """
     for p in (
-        os.environ.get("SGV_ANONYMIZE_DENYLIST"),
+        _env_path("SGV_ANONYMIZE_DENYLIST", None),
         os.path.join(_state_dir(), "anonymize_denylist.txt"),
         os.path.join(_skill_dir(), "anonymize_denylist.txt"),
         os.path.join(_skill_dir(), "anonymize_denylist.example.txt"),
@@ -76,9 +85,16 @@ def _denylist_path():
 
 
 def _load_app_config():
+    """Load the operator's config.json — the ONE canonical chain shared by every
+    loader: $SGV_CONFIG -> $XDG_CONFIG_HOME/sgv-tweet-digest/config.json ->
+    <skill_dir>/config.json (the README quickstart copy) -> the shipped example."""
+    cfg_base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+        os.path.expanduser("~"), ".config"
+    )
     for p in (
-        os.environ.get("SGV_CONFIG"),
-        os.path.join(_state_dir(), "config.json"),
+        _env_path("SGV_CONFIG", None),
+        os.path.join(cfg_base, "sgv-tweet-digest", "config.json"),
+        os.path.join(_skill_dir(), "config.json"),
         os.path.join(_skill_dir(), "config.example.json"),
     ):
         if p and os.path.exists(p):
@@ -99,7 +115,7 @@ DENYLIST_PATH = _denylist_path()
 SNAPSHOT_DIR = _state_dir()
 
 # Fireflies cache dir — activation is purely on this dir/glob existing.
-FIREFLIES_CACHE_DIR = os.environ.get(
+FIREFLIES_CACHE_DIR = _env_path(
     "SGV_FIREFLIES_CACHE_DIR", os.path.join(_state_dir(), "fireflies")
 )
 TRANSCRIPTS_CACHE_GLOB = os.path.join(FIREFLIES_CACHE_DIR, "transcripts_*.json")
@@ -405,7 +421,13 @@ def fetch_notion_deals(top_n=15, body_for_top=5):
         from notion_client import query_deals_pool, extract_deal_summary, fetch_page_body
     except Exception as e:
         return [], f"notion import failed: {e}"
-    active_statuses = {"New Leads", "Qualified Leads", "Discussion"}
+    # Honor the same NOTION_KEY_COLUMNS override the query layer uses, so a
+    # custom funnel isn't fetched by notion_client only to be dropped here.
+    key_cols = os.environ.get("NOTION_KEY_COLUMNS")
+    if key_cols:
+        active_statuses = {c.strip() for c in key_cols.split(",") if c.strip()}
+    else:
+        active_statuses = {"New Leads", "Qualified Leads", "Discussion"}
     try:
         pages = query_deals_pool()
     except Exception as e:
@@ -711,7 +733,10 @@ def sonnet_distill(payload):
         messages=[{"role": "user", "content": user_msg}],
     )
 
-    raw = resp.content[0].text.strip()
+    if getattr(resp, "stop_reason", None) == "max_tokens":
+        raise RuntimeError("Sonnet output truncated at max_tokens — JSON would be invalid")
+    # First TEXT block (newer models may emit a thinking block at content[0])
+    raw = next((b.text for b in resp.content if getattr(b, "type", "") == "text"), "").strip()
     if raw.startswith("```"):
         raw = re.sub(r"^```(?:json)?\n?|\n?```$", "", raw)
     parsed = json.loads(raw)
@@ -775,6 +800,25 @@ def run(dry_run=False, verbose=True):
     log(f"   dry-run: {dry_run}")
 
     errors = []
+
+    # SAFETY GATE: never draft from real internal sources with only the shipped
+    # FAKE-NAME example denylist — real portfolio/founder names would pass the
+    # deterministic anonymizer untouched. Drop in your real anonymize_denylist.txt
+    # (see SGV_ANONYMIZE_DENYLIST / the state dir) to enable these sources.
+    any_source_configured = (
+        os.path.isdir(FIREFLIES_CACHE_DIR)
+        or (os.environ.get("NOTION_TOKEN") and os.environ.get("NOTION_DEALS_DB_ID"))
+        or os.environ.get("GMAIL_ACCOUNT")
+    )
+    if any_source_configured and DENYLIST_PATH.endswith("anonymize_denylist.example.txt"):
+        msg = ("REFUSING to run internal sources: only the shipped EXAMPLE denylist was "
+               f"found ({DENYLIST_PATH}). Create your real anonymize_denylist.txt "
+               "(state dir or SGV_ANONYMIZE_DENYLIST) so portfolio/founder names get "
+               "scrubbed before any draft is written.")
+        log(f"  !! {msg}")
+        return {"insights_sgv": [], "insights_mist": [], "insights": [],
+                "errors": errors + [msg], "cost_usd": 0,
+                "source_counts": {"fireflies": 0, "notion": 0, "emails": 0}}
 
     # Fetch — Fireflies (optional, cache-presence gated)
     log("  [F] Fireflies (last 7d from cache)...")

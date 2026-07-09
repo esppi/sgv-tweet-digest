@@ -4,9 +4,11 @@ This is the heuristic pre-filter that ranks every gathered candidate tweet befor
 Opus picks the final top 3. `scripts/digest.py` computes it deterministically in
 `heuristic_score()`; this file is the human-readable spec so you can audit or tune it.
 
-The pipeline keeps the top `candidate_count` (see your config; default 30) by this
-score and hands only those to Opus. Tweets scoring below your `score_threshold`
-(config; default 8) should not surface as top-3 engage picks.
+The pipeline keeps the top `candidate_count` (config; the shipped example sets 30,
+code default 50) by this score and hands only those to Opus. `score_threshold`
+(config; example sets 8, 0 disables) drops candidates below that score first —
+**softly**: if the gate would leave fewer than `top_n` tweets, it is skipped for
+that run rather than starving the digest.
 
 Displayed as `/20` for continuity with older digests, but **18 is the real max**
 (the deprecated "mentions" provenance bucket was removed, dropping 2 points off the

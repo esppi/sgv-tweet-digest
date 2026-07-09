@@ -20,7 +20,7 @@ Type=oneshot
 Environment=TZ=UTC
 EnvironmentFile=%h/.config/sgv-tweet-digest/env
 WorkingDirectory=%h
-ExecStart=${VENV_PYTHON} ${SKILL_DIR}/scripts/digest.py
+ExecStart=/bin/bash -c 'exec "$VENV_PYTHON" "$SKILL_DIR/scripts/digest.py"'
 StandardOutput=append:%h/.local/state/sgv-tweet-digest/digest.log
 StandardError=append:%h/.local/state/sgv-tweet-digest/digest.log
 TimeoutStartSec=600

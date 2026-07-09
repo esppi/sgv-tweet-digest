@@ -19,7 +19,7 @@ Type=oneshot
 Environment=TZ=UTC
 EnvironmentFile=%h/.config/sgv-tweet-digest/env
 WorkingDirectory=%h
-ExecStart=${VENV_PYTHON} ${SKILL_DIR}/scripts/our_tweets_fetcher.py --budget 0.20
+ExecStart=/bin/bash -c 'exec "$VENV_PYTHON" "$SKILL_DIR/scripts/our_tweets_fetcher.py" --budget 0.20'
 StandardOutput=append:%h/.local/state/sgv-tweet-digest/our-tweets-fetcher.log
 StandardError=append:%h/.local/state/sgv-tweet-digest/our-tweets-fetcher.log
 TimeoutStartSec=300

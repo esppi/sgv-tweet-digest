@@ -1,6 +1,6 @@
 ---
 name: sgv-tweet-digest
-version: 0.1.0
+version: 0.1.1
 description: >-
   Drafts a daily dual-voice crypto-Twitter digest from your X follow-graph and
   curated Lists: scores candidate tweets with a metrics-first 0-18 rubric, picks
@@ -113,13 +113,16 @@ This is what `/sgv-tweet-digest` runs. It:
 Use `$VENV_PYTHON` (the Telethon-capable interpreter) for `digest.py` — system python3
 will fail the Telegram reads/sends.
 
-### Feedback loop  (`feedback_profile.py` + `steering_analyzer.py`, ~13:30 UTC)
-After tweets have been live long enough, joins drafted ideas to posted tweets, computes
-per-archetype engagement, and asks Sonnet for do-more / do-less rules. The next digest run
+### Feedback loop  (`idea_matcher.py` ~12:40 UTC, then `feedback_profile.py` + `steering_analyzer.py` ~13:30 UTC)
+`idea_matcher.py` links your actually-posted tweets to the drafted ideas that inspired them
+(TF-IDF prefilter, then a small Sonnet judge, ~$0.003/pair) — it writes `tweet_idea_matches`,
+which is what makes the rest of the loop live. `feedback_profile.py` then computes per-archetype
+engagement over those matches and asks Sonnet for do-more / do-less rules; the next digest run
 injects that signal. `steering_analyzer.py` measures whether the model actually shifted toward
 the recommended archetypes and auto-suppresses weak ones.
 
 ```bash
+"$VENV_PYTHON" ${CLAUDE_SKILL_DIR}/scripts/idea_matcher.py
 "$VENV_PYTHON" ${CLAUDE_SKILL_DIR}/scripts/feedback_profile.py
 python3 ${CLAUDE_SKILL_DIR}/scripts/steering_analyzer.py
 ```

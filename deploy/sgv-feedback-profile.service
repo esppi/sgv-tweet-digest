@@ -20,8 +20,8 @@ Type=oneshot
 Environment=TZ=UTC
 EnvironmentFile=%h/.config/sgv-tweet-digest/env
 WorkingDirectory=%h
-ExecStart=${VENV_PYTHON} ${SKILL_DIR}/scripts/feedback_profile.py
-ExecStart=${VENV_PYTHON} ${SKILL_DIR}/scripts/steering_analyzer.py
+ExecStart=/bin/bash -c 'exec "$VENV_PYTHON" "$SKILL_DIR/scripts/feedback_profile.py"'
+ExecStart=/bin/bash -c 'exec "$VENV_PYTHON" "$SKILL_DIR/scripts/steering_analyzer.py"'
 StandardOutput=append:%h/.local/state/sgv-tweet-digest/feedback-profile.log
 StandardError=append:%h/.local/state/sgv-tweet-digest/feedback-profile.log
 TimeoutStartSec=300

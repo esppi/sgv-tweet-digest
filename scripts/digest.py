@@ -61,7 +61,7 @@ def _state_dir():
 def _voice_profiles_path():
     """Resolve voice_profiles.json: $SGV_VOICE_PROFILES -> <state>/ -> shipped seed."""
     for p in (
-        os.environ.get("SGV_VOICE_PROFILES"),
+        _env_path("SGV_VOICE_PROFILES", None),
         os.path.join(_state_dir(), "voice_profiles.json"),
         os.path.join(_skill_dir(), "voice_profiles.json"),
     ):
@@ -70,11 +70,26 @@ def _voice_profiles_path():
     return os.path.join(_skill_dir(), "voice_profiles.json")
 
 
+def _env_path(name, default):
+    """Env-sourced path with $VAR/~ expansion (systemd EnvironmentFile does not
+    expand $HOME — a literal '$HOME/...' value must still resolve here)."""
+    v = os.environ.get(name)
+    if not v:
+        return default
+    return os.path.expanduser(os.path.expandvars(v))
+
+
 def _load_app_config():
-    """Load the operator's config.json, falling back to the shipped example."""
+    """Load the operator's config.json — the ONE canonical chain shared by every
+    loader: $SGV_CONFIG -> $XDG_CONFIG_HOME/sgv-tweet-digest/config.json ->
+    <skill_dir>/config.json (the README quickstart copy) -> the shipped example."""
+    cfg_base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+        os.path.expanduser("~"), ".config"
+    )
     for p in (
-        os.environ.get("SGV_CONFIG"),
-        os.path.join(_state_dir(), "config.json"),
+        _env_path("SGV_CONFIG", None),
+        os.path.join(cfg_base, "sgv-tweet-digest", "config.json"),
+        os.path.join(_skill_dir(), "config.json"),
         os.path.join(_skill_dir(), "config.example.json"),
     ):
         if p and os.path.exists(p):
@@ -92,19 +107,19 @@ _THRESHOLDS = CONFIG.get("thresholds", {}) if isinstance(CONFIG, dict) else {}
 
 STATE_DIR = _state_dir()
 SKILL_DIR = _skill_dir()
-STATS_PATH = os.environ.get("SGV_STATS_PATH", os.path.join(STATE_DIR, "stats.jsonl"))
+STATS_PATH = _env_path("SGV_STATS_PATH", os.path.join(STATE_DIR, "stats.jsonl"))
 
 # Bundled helpers — under the skill's scripts/ dir (this file's dir).
-SEND_SCRIPT = os.environ.get("SGV_SEND_SCRIPT", os.path.join(HERE, "send_message.sh"))
-TELEGRAM_READ_PY = os.environ.get(
+SEND_SCRIPT = _env_path("SGV_SEND_SCRIPT", os.path.join(HERE, "send_message.sh"))
+TELEGRAM_READ_PY = _env_path(
     "SGV_TELEGRAM_READ", os.path.join(HERE, "telegram", "read.py")
 )
 
 # Telethon-capable interpreter (Telegram I/O). Defaults to python3 on PATH.
-VENV_PY = os.environ.get("VENV_PYTHON", "python3")
+VENV_PY = _env_path("VENV_PYTHON", "python3")
 
 # owned-reads gatherer output (written by gather_x.py into the state dir).
-OWNED_READS_PATH = os.environ.get(
+OWNED_READS_PATH = _env_path(
     "SGV_OWNED_READS", os.path.join(STATE_DIR, "latest.json")
 )
 
@@ -124,7 +139,12 @@ TOP_N = int(_THRESHOLDS.get("top_n", 3))                 # top tweets (shared by
 SHOAL_N = int(_THRESHOLDS.get("shoal_n", 3))             # Shoal headlines per voice
 IDEAS_N_PER_VOICE = int(_THRESHOLDS.get("ideas_n_per_voice", 2))  # ideas per voice
 SHOAL_LIMIT = int(_THRESHOLDS.get("shoal_limit", 30))
-PRE_FILTER_KEEP = int(_THRESHOLDS.get("pre_filter_keep", 50))  # Stage 1 keeps top N for Opus
+# Stage 1 keeps top N for Opus — config `candidate_count` (documented knob);
+# `thresholds.pre_filter_keep` kept as a legacy fallback name.
+PRE_FILTER_KEEP = int(CONFIG.get("candidate_count", _THRESHOLDS.get("pre_filter_keep", 50)))
+# Optional min heuristic score for the candidate pool (config `score_threshold`;
+# 0 disables). Softly enforced — see main(): never allowed to empty the pool.
+SCORE_THRESHOLD = int(CONFIG.get("score_threshold", 0))
 OPUS_MODEL = _MODELS.get("opus", "claude-opus-4-7")
 SEND_DELAY = float(_THRESHOLDS.get("send_delay_s", 1.0))
 BUDGET_SECONDS = int(_THRESHOLDS.get("budget_seconds", 550))
@@ -691,7 +711,10 @@ def opus_pick(candidates, shoal_news):
         messages=[{"role": "user", "content": user_msg}],
     )
 
-    raw = resp.content[0].text.strip()
+    if getattr(resp, "stop_reason", None) == "max_tokens":
+        raise RuntimeError("Opus output truncated at max_tokens — JSON would be invalid")
+    # First TEXT block (newer models may emit a thinking block at content[0])
+    raw = next((b.text for b in resp.content if getattr(b, "type", "") == "text"), "").strip()
     # Parse JSON (tolerate code fences)
     if raw.startswith("```"):
         raw = re.sub(r"^```(?:json)?\n?|\n?```$", "", raw)
@@ -703,11 +726,12 @@ def opus_pick(candidates, shoal_news):
         "cache_creation_input_tokens": getattr(resp.usage, "cache_creation_input_tokens", 0),
         "cache_read_input_tokens": getattr(resp.usage, "cache_read_input_tokens", 0),
     }
+    # Opus 4.5+ pricing: $5/M in, $25/M out, 1.25× in for cache write, 0.1× for cache read
     cost = (
-        usage["input_tokens"] * 15 / 1_000_000 +
-        usage["output_tokens"] * 75 / 1_000_000 +
-        usage["cache_creation_input_tokens"] * 18.75 / 1_000_000 +  # 1.25× input for cache write
-        usage["cache_read_input_tokens"] * 1.5 / 1_000_000
+        usage["input_tokens"] * 5 / 1_000_000 +
+        usage["output_tokens"] * 25 / 1_000_000 +
+        usage["cache_creation_input_tokens"] * 6.25 / 1_000_000 +
+        usage["cache_read_input_tokens"] * 0.5 / 1_000_000
     )
     return parsed, usage, cost
 
@@ -861,8 +885,16 @@ def _emit_idea(send, emoji, num, kind, topic, draft, inspo_label, inspo_url=""):
     send(body)
 
 
+# Set by main() — when True, delivery never touches feedback.db (a dry run must
+# not seed the feedback loop with ideas that were never actually delivered).
+DRY_RUN = False
+
+
 def _save_idea_to_db(idea_dict):
-    """Persist one idea row. Silent-pass on DB import failure (db is optional infra)."""
+    """Persist one idea row. Silent-pass on DB import failure (db is optional infra).
+    No-op on --dry-run."""
+    if DRY_RUN:
+        return None
     try:
         import feedback_db as _db
         return _db.save_idea(idea_dict)
@@ -1033,15 +1065,17 @@ def _deliver_section3_good_content(send, voice, digest_run_id):
             "feedback_profile_id": ACTIVE_FEEDBACK_PROFILE_ID,
             "raw":              gc,
         })
-        # Mark this content as 'reminded' so it doesn't recur
-        try:
-            _db.set_good_content_status(
-                gc["id"],
-                "sent" if gc.get("status") != "sent" else "sent",
-                reminded_at=_db.now_iso(),
-            )
-        except Exception:
-            pass
+        # Mark this content as 'reminded' so it doesn't recur.
+        # Never on --dry-run: a preview must not consume the pending item.
+        if not DRY_RUN:
+            try:
+                _db.set_good_content_status(
+                    gc["id"],
+                    "sent" if gc.get("status") != "sent" else "sent",
+                    reminded_at=_db.now_iso(),
+                )
+            except Exception:
+                pass
     return delivered
 
 
@@ -1088,9 +1122,11 @@ def deliver_digest_dual(picks_by_id, opus_out, shoal_news, insights_result, dry_
 # MAIN
 # ─────────────────────────────────────────
 def main():
+    global DRY_RUN
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+    DRY_RUN = args.dry_run
 
     t0 = time.time()
     print(f"== SGV Tweet Digest {datetime.datetime.now().isoformat()} ==")
@@ -1171,6 +1207,13 @@ def main():
     filtered = dedupe_and_filter(owned)
     for t in filtered:
         heuristic_score(t)
+    # Optional min-score gate (config score_threshold) — soft: never empties the pool.
+    if SCORE_THRESHOLD > 0:
+        gated = [t for t in filtered if t["_heuristic_score"] >= SCORE_THRESHOLD]
+        if len(gated) >= TOP_N:
+            filtered = gated
+        else:
+            print(f"  score_threshold={SCORE_THRESHOLD} would leave only {len(gated)} tweets — gate skipped this run")
     filtered.sort(key=lambda t: -t["_heuristic_score"])
     candidates = filtered[:PRE_FILTER_KEEP]
     print(f"  heuristic stage: {len(filtered)} filtered → top {len(candidates)} for Opus")
@@ -1190,7 +1233,17 @@ def main():
         sys.exit(2)
 
     print(f"  calling Opus...")
-    opus_out, usage, cost = opus_pick(candidates, shoal)
+    try:
+        opus_out, usage, cost = opus_pick(candidates, shoal)
+    except Exception as e:
+        # A cron box would otherwise fail silently — one alert, then non-zero exit.
+        print(f"FATAL: Opus pick failed: {e}", file=sys.stderr)
+        if not args.dry_run:
+            subprocess.run(["bash", SEND_SCRIPT, DELIVERY_CHAT,
+                            f"⚠️ SGV digest ABORTED: Opus call failed ({str(e)[:200]}). "
+                            f"No digest today — check the digest log."],
+                           check=False, timeout=20)
+        sys.exit(3)
     print(f"  Opus returned: {len(opus_out.get('picks',[]))} picks, "
           f"sgv_shoal={len(opus_out.get('sgv_shoal_picks',[]))} mist_shoal={len(opus_out.get('mist_shoal_picks',[]))}, "
           f"sgv_ideas={len(opus_out.get('sgv_ideas',[]))} mist_ideas={len(opus_out.get('mist_ideas',[]))}")
@@ -1214,16 +1267,20 @@ def main():
         insights_result = {"insights_sgv": [], "insights_mist": [],
                            "errors": [f"insights module crashed: {e}"], "cost_usd": 0}
 
-    # Generate Sonnet drafts for any ingested good_content rows that don't have drafts yet
-    print("  generating good_content drafts...")
+    # Generate Sonnet drafts for any ingested good_content rows that don't have drafts yet.
+    # Skipped entirely on --dry-run: it spends Sonnet AND writes drafts to feedback.db.
     gc_cost = 0.0
-    try:
-        import good_content as _gc_mod
-        gc_result = _gc_mod.run(limit=3, verbose=True)
-        gc_cost = (gc_result or {}).get("cost_usd", 0) or 0
-        print(f"  good_content: drafted={gc_result.get('drafted',0)} cost=${gc_cost:.4f}")
-    except Exception as e:
-        print(f"  good_content drafter FAILED (non-fatal): {e}")
+    if args.dry_run:
+        print("  good_content drafting: skipped (--dry-run)")
+    else:
+        print("  generating good_content drafts...")
+        try:
+            import good_content as _gc_mod
+            gc_result = _gc_mod.run(limit=3, verbose=True)
+            gc_cost = (gc_result or {}).get("cost_usd", 0) or 0
+            print(f"  good_content: drafted={gc_result.get('drafted',0)} cost=${gc_cost:.4f}")
+        except Exception as e:
+            print(f"  good_content drafter FAILED (non-fatal): {e}")
 
     picks_by_id = {t["tweet_id"]: t for t in candidates}
     delivery_stats = deliver_digest_dual(picks_by_id, opus_out, shoal, insights_result, args.dry_run)

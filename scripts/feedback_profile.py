@@ -24,14 +24,20 @@ LOOKBACK_DAYS = 14
 MIN_SAMPLE_TO_RECOMMEND = 3   # need at least this many matched tweets before generating recs
 
 
-def _sonnet_model():
-    """Sonnet model id from operator config ('sonnet_model'), else the default."""
+def _config():
     try:
         from gather_x import load_config
-        cfg = load_config()
-        return cfg.get("sonnet_model") or DEFAULT_SONNET_MODEL
+        return load_config() or {}
     except Exception:
-        return DEFAULT_SONNET_MODEL
+        return {}
+
+
+def _sonnet_model():
+    """Sonnet model id from operator config (models.sonnet — same key as the
+    other modules; the old top-level 'sonnet_model' is kept as a fallback)."""
+    cfg = _config()
+    models = cfg.get("models", {}) if isinstance(cfg, dict) else {}
+    return models.get("sonnet") or cfg.get("sonnet_model") or DEFAULT_SONNET_MODEL
 
 
 def _anthropic_api_key():
@@ -143,10 +149,21 @@ def compute_archetype_stats(matched, all_tweets):
     return stats, round(baseline, 2)
 
 
-SONNET_SYSTEM = """You are analyzing the SGV tweet-feedback loop.
+def _sonnet_system():
+    """System prompt with the operator's OWN handles (nothing hardcoded).
+    Uses .replace(), not .format() — the template body contains JSON braces."""
+    cfg = _config()
+    personal = cfg.get("personal_username", "personal-account")
+    fund = cfg.get("sgv_username", "fund-account")
+    return (SONNET_SYSTEM_TEMPLATE
+            .replace("@{personal}", "@" + str(personal))
+            .replace("@{fund}", "@" + str(fund)))
+
+
+SONNET_SYSTEM_TEMPLATE = """You are analyzing the SGV tweet-feedback loop.
 
 Goal: tell the digest pipeline what TYPES of ideas drove the BEST engagement
-on @0x_Mist and @socialgraphvc in the recent window. The pipeline will inject
+on @{personal} and @{fund} in the recent window. The pipeline will inject
 your recommendations into tomorrow's Opus + Sonnet system prompts so the next
 batch of ideas leans toward what worked.
 
@@ -196,10 +213,13 @@ def sonnet_recommend(client, stats, matched, baseline):
     resp = client.messages.create(
         model=_sonnet_model(),
         max_tokens=1200,
-        system=[{"type": "text", "text": SONNET_SYSTEM, "cache_control": {"type": "ephemeral"}}],
+        system=[{"type": "text", "text": _sonnet_system(), "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": user_msg}],
     )
-    raw = resp.content[0].text.strip()
+    if getattr(resp, "stop_reason", None) == "max_tokens":
+        raise RuntimeError("Sonnet output truncated at max_tokens — JSON would be invalid")
+    # First TEXT block (newer models may emit a thinking block at content[0])
+    raw = next((b.text for b in resp.content if getattr(b, "type", "") == "text"), "").strip()
     if raw.startswith("```"):
         import re
         raw = re.sub(r"^```(?:json)?\n?|\n?```$", "", raw)

@@ -22,4 +22,5 @@ else
     SEND_SCRIPT="$HERE/telegram/send.py"
 fi
 
-"$VENV_PY" "$SEND_SCRIPT" "$1" "$2"
+# "--" so a message that starts with "-" (a drafted tweet can) isn't parsed as a flag
+"$VENV_PY" "$SEND_SCRIPT" -- "$1" "$2"

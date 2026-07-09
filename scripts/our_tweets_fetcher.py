@@ -79,10 +79,14 @@ def _get(url, retries=3):
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", errors="replace")
             if e.code == 401:
-                # Token may be stale; force one refresh attempt
+                # Token may be stale; force one REAL refresh — clearing the cache
+                # alone would re-read the same revoked-but-unexpired access token
+                # from the file (the refresher only refreshes near expiry).
                 if attempt == 0:
                     global _OAUTH2_TOKEN_CACHED
-                    _OAUTH2_TOKEN_CACHED = None
+                    _OAUTH2_TOKEN_CACHED = _oauth2_access_token(force_refresh=True)
+                    if not _OAUTH2_TOKEN_CACHED:
+                        _OAUTH2_TOKEN_CACHED = None  # let _bearer() fall back to app-only
                     continue
                 raise RuntimeError(f"HTTP 401 after token refresh: {body[:300]}")
             if e.code == 429:
