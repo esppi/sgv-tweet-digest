@@ -281,6 +281,17 @@ def heuristic_score(t):
         e += 2
     elif rate > 0.003:
         e += 1
+    # VELOCITY: engagement per hour since posting — a 30-min-old tweet with 150
+    # engagements is hotter than a 6-hour-old one with 400. Catches risers before
+    # they peak (the whole point of engaging early). Missing created_at -> 0.
+    age_days = _days_since_iso_str(t.get("created_at"))
+    if age_days < 2:  # only meaningful for fresh tweets; guards the 1e9 sentinel
+        age_h = max(age_days * 24, 0.5)
+        velocity = eng_sum / age_h
+        if velocity > 150:
+            e += 2
+        elif velocity > 50:
+            e += 1
     if m.get("like_count", 0) > 1000:
         e += 2
     elif m.get("like_count", 0) > 300:
@@ -712,6 +723,25 @@ def _print_steering_status_if_enabled():
           f"engagement on_rec/off_rec = {on_n}/{off_n}, lift {lift_str}")
 
 
+def _load_idea_memory(days=7, cap=40):
+    """Recent drafted ideas as DO-NOT-REPEAT lines for the Opus USER message —
+    the same anti-repetition pattern insights.py uses (never in the cached
+    system prompt). Empty list on any failure -> today's behavior."""
+    try:
+        import feedback_db as _fdb
+        rows = _fdb.get_recent_ideas(days=days)
+    except Exception:
+        return []
+    lines, seen = [], set()
+    for r in rows:
+        line = (f"[{(r.get('generated_at') or '')[:10]} {r.get('voice') or '?'}] "
+                f"topic={r.get('topic') or '?'} | draft: {(r.get('draft') or '')[:120]}")
+        if line not in seen:
+            seen.add(line)
+            lines.append(line)
+    return lines[:cap]
+
+
 def opus_pick(candidates, shoal_news):
     """Call Claude Opus with pre-filtered candidates + news. Returns parsed JSON."""
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -754,8 +784,17 @@ def opus_pick(candidates, shoal_news):
         f"{json.dumps(compact, indent=2)}\n\n"
         f"NEWS ({len(compact_shoal)} items from last 20h):\n"
         f"{json.dumps(compact_shoal, indent=2)}\n\n"
-        "Return the structured JSON as specified. No preamble, no explanation, JSON only."
     )
+    memory_lines = _load_idea_memory()
+    if memory_lines:
+        user_msg += (
+            "ALREADY DRAFTED IN THE LAST 7 DAYS — DO NOT REPEAT:\n"
+            + "\n".join("  - " + l for l in memory_lines)
+            + "\nHARD RULE: a topic+angle above is BURNED even reworded. Take a "
+            "genuinely different angle or different source material for every "
+            "idea and QT draft in this output.\n\n"
+        )
+    user_msg += "Return the structured JSON as specified. No preamble, no explanation, JSON only."
 
     resp = client.messages.create(
         model=OPUS_MODEL,

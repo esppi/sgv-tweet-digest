@@ -42,6 +42,10 @@ engagement_rate = (likes + retweets + replies + quotes) / impression_count
   > 3%    +3
   > 1%    +2
   > 0.3%  +1
+velocity = (likes + retweets + replies + quotes) / max(age_hours, 0.5)
+  (fresh tweets only, age < 48h — catches risers before they peak)
+  > 150/h  +2
+  > 50/h   +1
 like_count   > 1000  +2   | > 300  +1
 retweet_count > 100  +1
 reply_count   > 50   +1     (real discussion, not a broadcast)

@@ -172,6 +172,11 @@ def _send_message_script():
 
 _RATE_LIMIT_STATE = {}  # url-prefix -> (remaining, reset_epoch)
 
+# Set when ANY call returns 402 credits-depleted. The P1 probe endpoint 403s on
+# some API tiers and can't detect this, so list-level 402s must set it too —
+# otherwise the digest reports a cryptic "0 tweets" instead of "top up credits".
+X_CREDITS_DEPLETED = False
+
 
 def _url_bucket(url):
     """Group URLs into rate-limit buckets (X caps by endpoint pattern)."""
@@ -245,7 +250,9 @@ def xapi(url, params=None):
                 backoff = min(backoff * 2, 300)
                 continue
             if e.code == 402:
-                print("    [402] budget exhausted")
+                print("    [402] X credits depleted")
+                global X_CREDITS_DEPLETED
+                X_CREDITS_DEPLETED = True
                 return {"_budget_exhausted": True}, 0
             print("    [api error " + str(e.code) + "] " + str(e.reason))
             return {}, 0
@@ -442,7 +449,9 @@ def _xapi_user(url, token, params=None):
                 backoff = min(backoff * 2, 300)
                 continue
             if e.code == 402:
-                print("    [402 user-ctx] budget exhausted")
+                print("    [402 user-ctx] X credits depleted")
+                global X_CREDITS_DEPLETED
+                X_CREDITS_DEPLETED = True
                 return {}
             print("    [user-api " + str(e.code) + "] " + str(e.reason) + " on " + url[:60])
             return {}
@@ -922,6 +931,15 @@ def main():
     output["scan_end_utc"] = datetime.datetime.utcnow().isoformat() + "Z"
     # Use real cost tracker, not the legacy estimate
     output["stats"]["estimated_cost_usd"] = round(state["cost_today_usd"], 4)
+
+    # 402s seen on list calls (the probe can't always detect depletion): mark the
+    # output so the digest fires its SPECIFIC credits alert, and alert here too.
+    if X_CREDITS_DEPLETED:
+        output["stats"]["credits_depleted"] = True
+        if "x-api-credits-depleted" not in output["stats"]["errors"]:
+            output["stats"]["errors"].append("x-api-credits-depleted")
+        _alert("X API CREDITS DEPLETED (402 on list fetches). Top up at console.x.com "
+               "or the digest will be empty.", dry_run=args.dry_run)
 
     # If we hit the cap, fire a Telegram heads-up (informational, non-blocking)
     if output["stats"]["budget_cap_hit"] and not args.dry_run:

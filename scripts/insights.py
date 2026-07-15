@@ -229,6 +229,49 @@ def anonymize_dict(d):
     return d
 
 
+# Guard set for the denylist auto-add: deal names that are also common English
+# words must NOT be auto-denylisted (redacting the word "ground" everywhere would
+# wreck every draft). Such names get a loud warning for manual handling instead.
+_COMMON_WORD_GUARD = {
+    "ground", "crush", "prized", "peso", "tomorrow", "foundry", "pulse", "seam",
+    "berry", "pluto", "atlas", "nova", "prime", "spark", "wave", "echo", "drift",
+    "forge", "quest", "scout", "amber", "basis", "bloom", "cedar", "delta",
+    "ember", "flint", "haven", "index", "lever", "meter", "oasis", "orbit",
+    "pilot", "quill", "ridge", "slate", "summit", "tide", "vault", "zephyr",
+}
+
+
+def auto_add_denylist_terms(deal_names, log):
+    """Auto-append NEW Notion deal names to the ACTIVE operator denylist so a raw
+    deal name can never reach a draft or inspo label (this leaked repeatedly when
+    additions were manual). Never touches the shipped .example file. Returns the
+    number of terms added; resets the in-memory rules so THIS run is covered."""
+    global _DENYLIST
+    if DENYLIST_PATH.endswith(".example.txt"):
+        return 0  # the safety gate in run() refuses internal sources anyway
+    existing = {t.lower() for t, _ in _denylist()}
+    added, skipped = [], []
+    for name in deal_names:
+        name = (name or "").strip()
+        low = name.lower()
+        if not name or low in existing:
+            continue
+        if len(name) < 4 or low in _COMMON_WORD_GUARD:
+            skipped.append(name)
+            continue
+        added.append(f"{name} -> [a startup]")
+        existing.add(low)
+    if skipped:
+        log(f"  !! denylist auto-add SKIPPED (common-word/short names — handle manually): {skipped}")
+    if not added:
+        return 0
+    with open(DENYLIST_PATH, "a") as f:
+        f.write("\n# auto-added by insights.py (new Notion deals)\n" + "\n".join(added) + "\n")
+    _DENYLIST = None  # reload so this run's anonymization already covers them
+    log(f"  ++ denylist auto-add: {[a.split(' -> ')[0] for a in added]}")
+    return len(added)
+
+
 def denylist_only(text):
     """Denylist pass WITHOUT the handle/email/dollar regexes — for PUBLIC timeline
     tweets: a denylisted portfolio company trending publicly must not hand Sonnet
@@ -1016,6 +1059,11 @@ def run(dry_run=False, verbose=True):
         log(f"    -> {e_err}")
     else:
         log(f"    -> {len(emails)} emails")
+
+    # Auto-denylist any NEW deal names BEFORE anonymization runs, so raw names
+    # can never reach drafts or inspo labels even on a deal's first appearance.
+    if notion_deals:
+        auto_add_denylist_terms([d.get("name") for d in notion_deals], log)
 
     raw_payload = {
         "fireflies": fireflies,
