@@ -877,6 +877,23 @@ def _send_via_bot(chat_id, text, timeout=20):
     return result
 
 
+def _alert_operator(msg, dry_run):
+    """Fatal-path alert to BOTH the fund group and the personal DM. All three
+    credit outages in week 1 DID alert the group — and got drowned; the
+    operator's DM is what actually gets seen."""
+    if dry_run:
+        return
+    try:
+        subprocess.run(["bash", SEND_SCRIPT, DELIVERY_CHAT, msg], check=False, timeout=20)
+    except Exception:
+        pass
+    try:
+        if DELIVERY_CHAT_MIST:
+            _send_via_bot(DELIVERY_CHAT_MIST, msg)
+    except Exception:
+        pass
+
+
 def make_sender(dry_run, chat_id, label="", via="user_session"):
     """Returns a (send, stats) pair scoped to a single chat_id.
 
@@ -1342,10 +1359,7 @@ def main():
     # Hard-require owned-reads
     if not os.path.exists(OWNED_READS_PATH):
         print(f"FATAL: {OWNED_READS_PATH} missing", file=sys.stderr)
-        if not args.dry_run:
-            subprocess.run(["bash", SEND_SCRIPT, DELIVERY_CHAT,
-                          "⚠️ SGV digest ABORTED: owned-reads latest.json missing."],
-                          check=False)
+        _alert_operator("⚠️ SGV digest ABORTED: owned-reads latest.json missing.", args.dry_run)
         sys.exit(2)
 
     owned = load_inputs()
@@ -1366,14 +1380,13 @@ def main():
     # Path 1: explicit credits-depleted (Bearer-side 402)
     if gather_stats.get("credits_depleted") or any("credits-depleted" in str(e) for e in gather_errors):
         print("FATAL: gather reported credits_depleted upstream", file=sys.stderr)
-        if not args.dry_run:
-            msg = (
-                "🛑 SGV digest cannot run today.\n\n"
-                "X API credits depleted at the developer-account level. "
-                "Top up at https://console.x.com → your project → Pricing/Usage. "
-                "The next scheduled gather resumes automatically once credits are restored."
-            )
-            subprocess.run(["bash", SEND_SCRIPT, DELIVERY_CHAT, msg], check=False)
+        msg = (
+            "🛑 SGV digest cannot run today.\n\n"
+            "X API credits depleted at the developer-account level. "
+            "Top up at https://console.x.com → your project → Pricing/Usage. "
+            "The next scheduled gather resumes automatically once credits are restored."
+        )
+        _alert_operator(msg, args.dry_run)
         sys.exit(2)
 
     # Path 2: gather data is empty/stale — diagnose and alert with specifics
@@ -1400,8 +1413,7 @@ def main():
             f"Diagnose: `ssh {VPS_HOST} \"tail -30 <gather cron log>\"`"
         )
         print(f"FATAL: list_tweets=0 — {reason}", file=sys.stderr)
-        if not args.dry_run:
-            subprocess.run(["bash", SEND_SCRIPT, DELIVERY_CHAT, msg], check=False)
+        _alert_operator(msg, args.dry_run)
         sys.exit(2)
 
     if cap_hit:
@@ -1442,7 +1454,7 @@ def main():
                 f"Possibly all lists returned empty or were skipped. "
                 f"Check the gather cron log for diagnostics."
             )
-            subprocess.run(["bash", SEND_SCRIPT, DELIVERY_CHAT, msg], check=False)
+            _alert_operator(msg, False)
         sys.exit(2)
 
     print(f"  calling Opus...")
@@ -1451,11 +1463,8 @@ def main():
     except Exception as e:
         # A cron box would otherwise fail silently — one alert, then non-zero exit.
         print(f"FATAL: Opus pick failed: {e}", file=sys.stderr)
-        if not args.dry_run:
-            subprocess.run(["bash", SEND_SCRIPT, DELIVERY_CHAT,
-                            f"⚠️ SGV digest ABORTED: Opus call failed ({str(e)[:200]}). "
-                            f"No digest today — check the digest log."],
-                           check=False, timeout=20)
+        _alert_operator(f"⚠️ SGV digest ABORTED: Opus call failed ({str(e)[:200]}). "
+                        f"No digest today — check the digest log.", args.dry_run)
         sys.exit(3)
     print(f"  Opus returned: {len(opus_out.get('picks',[]))} picks, "
           f"sgv_shoal={len(opus_out.get('sgv_shoal_picks',[]))} mist_shoal={len(opus_out.get('mist_shoal_picks',[]))}, "

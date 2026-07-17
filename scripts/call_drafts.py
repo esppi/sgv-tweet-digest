@@ -194,7 +194,13 @@ def _sonnet(client, system, user_msg, max_tokens):
     cost = (u.input_tokens * 3 + u.output_tokens * 15
             + getattr(u, "cache_creation_input_tokens", 0) * 3.75
             + getattr(u, "cache_read_input_tokens", 0) * 0.30) / 1_000_000
-    return json.loads(raw), cost
+    # Tolerant parse: models sometimes append prose after the JSON object
+    # ("Extra data" on strict loads) — take the FIRST valid object.
+    start = raw.find("{")
+    if start < 0:
+        raise RuntimeError("no JSON object in response")
+    obj, _ = json.JSONDecoder().raw_decode(raw[start:])
+    return obj, cost
 
 
 # ─────────────────────────────────────────
@@ -246,10 +252,11 @@ def run(dry_run=False, verbose=True):
                 log(f"  [calls] call {n}: transcript too thin, skipping")
                 processed.append(cid)
                 continue
-            # Stage 1 — anonymized extraction
+            # Stage 1 — anonymized extraction (1600: dense hour-long calls
+            # overflowed 1000 — truncation aborts the whole call)
             ex, c1 = _sonnet(client, EXTRACT_SYSTEM,
                              f"CALL TRANSCRIPT ({dur:.0f} min):\n{text}\n\nReturn the JSON.",
-                             max_tokens=1000)
+                             max_tokens=1600)
             total_cost += c1
             moments = [m for m in (ex.get("moments") or []) if isinstance(m, dict)][:10]
             if not moments:
@@ -265,7 +272,7 @@ def run(dry_run=False, verbose=True):
                 user2 += ("DO-NOT-REPEAT (recent drafts):\n"
                           + "\n".join("  - " + b for b in burned) + "\n\n")
             user2 += "Return the JSON."
-            dr, c2 = _sonnet(client, draft_sys, user2, max_tokens=900)
+            dr, c2 = _sonnet(client, draft_sys, user2, max_tokens=1100)
             total_cost += c2
             drafts = []
             for d in (dr.get("drafts") or [])[:DRAFTS_PER_CALL]:
