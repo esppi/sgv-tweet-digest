@@ -220,6 +220,7 @@ The canonical names. Every script, the `.env.example`, and the deploy templates 
 | `SKILL_DIR` | yes (for scheduling) | not secret | Absolute path to the installed skill repo (used by the `deploy/` units' `ExecStart`). |
 | `NOTION_TOKEN` | optional | secret | Enables the Notion deal-funnel insights source. |
 | `NOTION_DEALS_DB_ID` | optional | not secret | Which Notion database insights queries (needed only if `NOTION_TOKEN` is set). |
+| `FIREFLIES_API_KEY` | optional | secret | Enables the call-drafts lane: anonymized personal-voice tweets from your recent Fireflies calls. |
 | `GMAIL_ACCOUNT` | optional | not secret | Account the `gog` CLI reads for weekly memos (insights). |
 | `SGV_ADMIN_EMAIL` | optional | not secret | Sender filter for the weekly-memo Gmail search (needed only if `GMAIL_ACCOUNT` is set). |
 

@@ -1240,7 +1240,49 @@ def _deliver_section3_good_content(send, voice, digest_run_id):
     return delivered
 
 
-def deliver_digest_dual(picks_by_id, opus_out, shoal_news, insights_result, dry_run):
+def _deliver_section4_call_drafts(call_result, send, digest_run_id):
+    """Section 4 — personal-only: anonymized tweet drafts from recent calls
+    (call_drafts.py two-stage lane). Skips silently when the lane is off."""
+    calls = (call_result or {}).get("call_drafts") or []
+    if not calls:
+        return 0
+    send("━━ 4️⃣ CALL DRAFTS — from your recent calls ━━")
+    delivered = 0
+    for ci, call in enumerate(calls, 1):
+        for di, d in enumerate(call.get("drafts") or [], 1):
+            draft = _capitalize_mist((d.get("draft") or "").strip())
+            if not draft:
+                continue
+            _emit_idea(
+                send,
+                emoji="🎙",
+                num=delivered + 1,
+                kind="tweet",
+                topic=f"{call.get('call_label', f'call {ci}')} · {d.get('angle', '')}",
+                draft=draft,
+                inspo_label=d.get("source_moment") or "call moment",
+                inspo_url="",
+            )
+            delivered += 1
+            _save_idea_to_db({
+                "digest_run_id":    digest_run_id,
+                "source_module":    "call_drafts",
+                "voice":            "mist",
+                "topic":            d.get("angle"),
+                "draft":            draft,
+                "inspo_kind":       "call",
+                "inspo_id":         call.get("call_label"),
+                "inspo_label":      d.get("source_moment"),
+                "inspo_snippet":    None,
+                "inspo_url":        None,
+                "viral_hooks":      d.get("viral_hooks") or [],
+                "feedback_profile_id": ACTIVE_FEEDBACK_PROFILE_ID,
+                "raw":              d,
+            })
+    return delivered
+
+
+def deliver_digest_dual(picks_by_id, opus_out, shoal_news, insights_result, dry_run, call_result=None):
     """Deliver the slim 3-section digest:
       Section 1 — Tweet ideas (Opus, with inspo)
       Section 2 — SGV insight tweet ideas (Sonnet, both voices)
@@ -1271,13 +1313,15 @@ def deliver_digest_dual(picks_by_id, opus_out, shoal_news, insights_result, dry_
     m1b = _deliver_section1b_hot_qts(opus_out, mist_send, "mist", digest_run_id)
     m2 = _deliver_section2_insights(insights_result, mist_send, "mist", digest_run_id)
     m3 = _deliver_section3_good_content(mist_send, "mist", digest_run_id)
-    print(f"  Mist sections: tweet_ideas={m1} hot_qts={m1b} insights={m2} good_content={m3}")
+    m4 = _deliver_section4_call_drafts(call_result, mist_send, digest_run_id)
+    print(f"  Mist sections: tweet_ideas={m1} hot_qts={m1b} insights={m2} good_content={m3} call_drafts={m4}")
 
     return {
         "sgv":  sgv_stats(),
         "mist": mist_stats(),
         "sgv_section_counts":  {"tweet_ideas": s1, "hot_qts": s1b, "insights": s2, "good_content": s3},
-        "mist_section_counts": {"tweet_ideas": m1, "hot_qts": m1b, "insights": m2, "good_content": m3},
+        "mist_section_counts": {"tweet_ideas": m1, "hot_qts": m1b, "insights": m2, "good_content": m3,
+                                "call_drafts": m4},
     }
 
 
@@ -1452,8 +1496,21 @@ def main():
         except Exception as e:
             print(f"  good_content drafter FAILED (non-fatal): {e}")
 
+    # Call-drafts lane (optional; FIREFLIES_API_KEY-gated; personal-only)
+    call_result = None
+    cd_cost = 0.0
+    try:
+        import call_drafts as _cd_mod
+        call_result = _cd_mod.run(dry_run=args.dry_run, verbose=True)
+        cd_cost = (call_result or {}).get("cost_usd", 0) or 0
+        n_calls = len((call_result or {}).get("call_drafts") or [])
+        print(f"  call_drafts: {n_calls} calls drafted | cost ${cd_cost:.4f}")
+    except Exception as e:
+        print(f"  call_drafts FAILED (non-fatal): {e}")
+
     picks_by_id = {t["tweet_id"]: t for t in candidates}
-    delivery_stats = deliver_digest_dual(picks_by_id, opus_out, shoal, insights_result, args.dry_run)
+    delivery_stats = deliver_digest_dual(picks_by_id, opus_out, shoal, insights_result, args.dry_run,
+                                         call_result=call_result)
 
     duration_s = time.time() - t0
     sgv_s = delivery_stats["sgv"]
@@ -1473,9 +1530,10 @@ def main():
         f"insights={insights_count_sgv}/gc={sgv_section.get('good_content',0)} · "
         f"mist sections: ideas={mist_section.get('tweet_ideas',0)}/"
         f"hotqt={mist_section.get('hot_qts',0)}/"
-        f"insights={insights_count_mist}/gc={mist_section.get('good_content',0)} · "
+        f"insights={insights_count_mist}/gc={mist_section.get('good_content',0)}/"
+        f"calls={mist_section.get('call_drafts',0)} · "
         f"sent sgv={sgv_s['sent']} mist={mist_s['sent']} fail={total_fail} · "
-        f"Opus ${cost:.3f} + Sonnet ${insights_cost:.3f} · {duration_s:.0f}s"
+        f"Opus ${cost:.3f} + Sonnet ${insights_cost + cd_cost:.3f} · {duration_s:.0f}s"
     )
     if not args.dry_run:
         # Fund group footer via user session (group send)
@@ -1513,6 +1571,8 @@ def main():
         "insights_mist_count": insights_count_mist,
         "insights_cost_usd":   round(insights_cost or 0, 4),
         "insights_source_counts": (insights_result or {}).get("source_counts", {}),
+        "call_drafts": len((call_result or {}).get("call_drafts") or []),
+        "call_drafts_cost_usd": round(cd_cost or 0, 4),
         "sgv_section_counts":  sgv_section,
         "mist_section_counts": mist_section,
     }

@@ -1,6 +1,6 @@
 ---
 name: sgv-tweet-digest
-version: 0.2.1
+version: 0.3.0
 description: >-
   Drafts a daily dual-voice crypto-Twitter digest from your X follow-graph and
   curated Lists: scores candidate tweets with a metrics-first 0-18 rubric, picks
@@ -104,6 +104,11 @@ This is what `/sgv-tweet-digest` runs. It:
    day's top-20 timeline tweets are added as public context for fresh angles (`timeline[i]` refs).
 5. **Good-content ideas (Sonnet, personal voice only)** — `scripts/good_content.py` drafts from
    URLs you flagged via the `gc:` Telegram poller (rows in `feedback.db`).
+5b. **Call drafts (Sonnet, personal voice only, optional)** — `scripts/call_drafts.py` pulls your
+   recent Fireflies calls (`FIREFLIES_API_KEY`-gated) and drafts up to 3 anonymized tweets per
+   call via a two-stage extract→draft pipeline: names/metrics/verbatim quotes are stripped AT
+   EXTRACTION, so the drafter never sees them. Same real-denylist safety gate as insights.
+   Each call is processed once (seen-ids tracked in `feedback.db`). ~$0.05-0.08/call, max 3/day.
 6. **Delivers** (see below) and **logs** `stats.jsonl` + saves every drafted idea to
    `feedback.db` for the loop.
 
