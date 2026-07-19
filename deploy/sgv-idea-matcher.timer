@@ -1,0 +1,15 @@
+# systemd USER timer TEMPLATE — idea matcher runs daily at 12:40 UTC:
+# after our-tweets-fetcher (12:30) snapshots posted tweets, well before
+# feedback-profile (13:30) reads the matches. Pairs with sgv-idea-matcher.service.
+# Install: see deploy/README.md.
+
+[Unit]
+Description=SGV Tweet Digest — idea matcher, daily at 12:40 UTC (after our-tweets fetch)
+
+[Timer]
+OnCalendar=*-*-* 12:40:00 UTC
+Persistent=true
+Unit=sgv-idea-matcher.service
+
+[Install]
+WantedBy=timers.target

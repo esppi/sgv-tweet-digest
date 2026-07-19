@@ -17,6 +17,8 @@ Each run produces, **per voice** (a fund voice and a personal voice):
   scored 0–18 on a transparent heuristic, with a one-line "why" and a suggested angle.
 - **2 original tweet ideas** in that voice.
 - **1 quote-tweet idea** off one of the surfaced posts.
+- **Up to 3 hot non-crypto QTs** (AI / tech / VC) — if you category-tag extra Lists in config,
+  the hottest non-crypto tweets get their own 🔥 block with a QT draft per voice.
 
 Delivery is split by voice:
 
@@ -62,7 +64,8 @@ Stage B  our_tweets_fetcher.py  your own tweets' live metrics ──▶ feedback
 Stage C  digest.py              score 0–18  ▶ Opus picks top-3 + dual-voice ideas
                                 ▶ Sonnet insights + good-content  ▶ deliver to Telegram
                                 ▶ log stats.jsonl + feedback.db
-feedback feedback_profile.py + steering_analyzer.py  ──▶ tunes the next run
+feedback idea_matcher.py        links posted tweets ⇆ past drafted ideas (tweet_idea_matches)
+         feedback_profile.py + steering_analyzer.py  ──▶ tunes the next run
 ```
 
 - **Scoring** is a deterministic 0–18 heuristic over each candidate tweet (recency, author signal,
@@ -76,8 +79,8 @@ feedback feedback_profile.py + steering_analyzer.py  ──▶ tunes the next ru
 
 - **[Claude Code](https://claude.com/claude-code)** installed.
 - **Python 3.10+** and the ability to create a virtual environment.
-- **Your own credentials** (you create these yourself — see the table below and
-  [`SECRETS-TO-SHARE.md`](SECRETS-TO-SHARE.md) if you received a handoff doc):
+- **Your own credentials** (you create these yourself - see the table below and
+  any private handoff document your operator provided):
   - An **Anthropic API key** (your own spend).
   - An **X / Twitter developer app**: an app **Bearer token** plus an **OAuth2** client authorized
     against **your own** `@handle` (app-only auth 403s on reading Lists / following, so a user token
@@ -142,8 +145,10 @@ Two files, both gitignored, both copied from the shipped templates:
    Opus/Sonnet **model ids**, the **daily X cost cap**, and scoring thresholds. The shipped example
    has placeholder ids and 1–2 example Lists — replace them with yours.
 
-The reference data ships ready to use: `vc-watchlist.json` (~300+ public crypto-VC / KOL X handles)
-and `voice_profiles.json` (the two tuned voice definitions) are read-only seeds you can edit.
+Two reference files also ship: `voice_profiles.json` (the two tuned voice definitions — read at
+runtime, rebuild yours with `scripts/build_voice_profiles.py`) and `vc-watchlist.json` (~300+ public
+crypto-VC / KOL X handles with tier labels — **reference data only**: no script currently reads it;
+it's a curation aid for building your own X Lists).
 
 ## Use
 
@@ -170,8 +175,11 @@ hard-fails on a missing source:
 
 Whatever these sources surface is run through an **anonymization denylist** before drafting. The repo
 ships only `anonymize_denylist.example.txt` (invented placeholder names). If you operate a real fund,
-keep your real `anonymize_denylist.txt` next to it — it is **gitignored** and loaded in preference to
-the example. If you are not using the internal sources, leave them off and ignore this section.
+you **must** create your real `anonymize_denylist.txt` (state dir or `SGV_ANONYMIZE_DENYLIST`) — it is
+**gitignored** and loaded in preference to the example. As a safety gate, `insights.py` **refuses to
+run the internal sources** while only the example denylist is present, so real portfolio/founder names
+can never reach a draft unscrubbed. If you are not using the internal sources, leave them off and
+ignore this section.
 
 ## Scheduling
 
@@ -181,10 +189,11 @@ To run the pipeline daily, use the systemd **user-unit templates** in
 | Time (UTC) | Unit | Stage |
 | --- | --- | --- |
 | 12:30 | `sgv-our-tweets-fetcher.timer` | B — own-tweet metrics |
+| 12:40 | `sgv-idea-matcher.timer` | feedback stage 1 — match posted tweets to past ideas |
 | 12:45 | `sgv-owned-reads-gather.timer` | A — Lists + following |
 | 13:00 | `sgv-tweet-digest.timer` | C — score, draft, deliver |
-| 13:30 | `sgv-feedback-profile.timer` | feedback + steering rollup |
-| every ~10 min | `sgv-good-content-poll` | always-on `gc:` link ingester |
+| 13:30 | `sgv-feedback-profile.timer` | feedback stage 2 — profile + steering rollup |
+| every ~5 min | `sgv-good-content-poll` | `gc:` link ingester (single pass, restart-looped) |
 
 By design, two Python interpreters are used: **system Python** for the stdlib-only Stage A gather,
 and the **venv Python** (Telethon + Anthropic) for the digest and all Telegram I/O. The deploy README
@@ -213,9 +222,11 @@ The canonical names. Every script, the `.env.example`, and the deploy templates 
 | `TELEGRAM_DELIVERY_CHAT_MIST` | yes | not secret | Telegram user/DM id for personal-voice delivery. |
 | `SHOAL_CHANNEL` | no | not secret | Telegram news channel/username the digest reads for context. |
 | `SGV_FEEDBACK_DB` | no | not secret | Path to the SQLite `feedback.db` (defaults under XDG state). |
-| `VENV_PYTHON` | yes (for scheduling) | not secret | Telethon-capable Python interpreter for the digest + Telegram I/O. |
+| `VENV_PYTHON` | yes (for scheduling) | not secret | Telethon-capable Python interpreter for the digest + Telegram I/O. **Absolute path** — systemd does not expand `$HOME`. |
+| `SKILL_DIR` | yes (for scheduling) | not secret | Absolute path to the installed skill repo (used by the `deploy/` units' `ExecStart`). |
 | `NOTION_TOKEN` | optional | secret | Enables the Notion deal-funnel insights source. |
 | `NOTION_DEALS_DB_ID` | optional | not secret | Which Notion database insights queries (needed only if `NOTION_TOKEN` is set). |
+| `FIREFLIES_API_KEY` | optional | secret | Enables the call-drafts lane: anonymized personal-voice tweets from your recent Fireflies calls. |
 | `GMAIL_ACCOUNT` | optional | not secret | Account the `gog` CLI reads for weekly memos (insights). |
 | `SGV_ADMIN_EMAIL` | optional | not secret | Sender filter for the weekly-memo Gmail search (needed only if `GMAIL_ACCOUNT` is set). |
 

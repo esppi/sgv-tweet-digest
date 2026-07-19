@@ -61,7 +61,7 @@ def _state_dir():
 def _voice_profiles_path():
     """Resolve voice_profiles.json: $SGV_VOICE_PROFILES -> <state>/ -> shipped seed."""
     for p in (
-        os.environ.get("SGV_VOICE_PROFILES"),
+        _env_path("SGV_VOICE_PROFILES", None),
         os.path.join(_state_dir(), "voice_profiles.json"),
         os.path.join(_skill_dir(), "voice_profiles.json"),
     ):
@@ -70,11 +70,26 @@ def _voice_profiles_path():
     return os.path.join(_skill_dir(), "voice_profiles.json")
 
 
+def _env_path(name, default):
+    """Env-sourced path with $VAR/~ expansion (systemd EnvironmentFile does not
+    expand $HOME — a literal '$HOME/...' value must still resolve here)."""
+    v = os.environ.get(name)
+    if not v:
+        return default
+    return os.path.expanduser(os.path.expandvars(v))
+
+
 def _load_app_config():
-    """Load the operator's config.json, falling back to the shipped example."""
+    """Load the operator's config.json — the ONE canonical chain shared by every
+    loader: $SGV_CONFIG -> $XDG_CONFIG_HOME/sgv-tweet-digest/config.json ->
+    <skill_dir>/config.json (the README quickstart copy) -> the shipped example."""
+    cfg_base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+        os.path.expanduser("~"), ".config"
+    )
     for p in (
-        os.environ.get("SGV_CONFIG"),
-        os.path.join(_state_dir(), "config.json"),
+        _env_path("SGV_CONFIG", None),
+        os.path.join(cfg_base, "sgv-tweet-digest", "config.json"),
+        os.path.join(_skill_dir(), "config.json"),
         os.path.join(_skill_dir(), "config.example.json"),
     ):
         if p and os.path.exists(p):
@@ -92,19 +107,19 @@ _THRESHOLDS = CONFIG.get("thresholds", {}) if isinstance(CONFIG, dict) else {}
 
 STATE_DIR = _state_dir()
 SKILL_DIR = _skill_dir()
-STATS_PATH = os.environ.get("SGV_STATS_PATH", os.path.join(STATE_DIR, "stats.jsonl"))
+STATS_PATH = _env_path("SGV_STATS_PATH", os.path.join(STATE_DIR, "stats.jsonl"))
 
 # Bundled helpers — under the skill's scripts/ dir (this file's dir).
-SEND_SCRIPT = os.environ.get("SGV_SEND_SCRIPT", os.path.join(HERE, "send_message.sh"))
-TELEGRAM_READ_PY = os.environ.get(
+SEND_SCRIPT = _env_path("SGV_SEND_SCRIPT", os.path.join(HERE, "send_message.sh"))
+TELEGRAM_READ_PY = _env_path(
     "SGV_TELEGRAM_READ", os.path.join(HERE, "telegram", "read.py")
 )
 
 # Telethon-capable interpreter (Telegram I/O). Defaults to python3 on PATH.
-VENV_PY = os.environ.get("VENV_PYTHON", "python3")
+VENV_PY = _env_path("VENV_PYTHON", "python3")
 
 # owned-reads gatherer output (written by gather_x.py into the state dir).
-OWNED_READS_PATH = os.environ.get(
+OWNED_READS_PATH = _env_path(
     "SGV_OWNED_READS", os.path.join(STATE_DIR, "latest.json")
 )
 
@@ -124,7 +139,15 @@ TOP_N = int(_THRESHOLDS.get("top_n", 3))                 # top tweets (shared by
 SHOAL_N = int(_THRESHOLDS.get("shoal_n", 3))             # Shoal headlines per voice
 IDEAS_N_PER_VOICE = int(_THRESHOLDS.get("ideas_n_per_voice", 2))  # ideas per voice
 SHOAL_LIMIT = int(_THRESHOLDS.get("shoal_limit", 30))
-PRE_FILTER_KEEP = int(_THRESHOLDS.get("pre_filter_keep", 50))  # Stage 1 keeps top N for Opus
+# Stage 1 keeps top N for Opus — config `candidate_count` (documented knob);
+# `thresholds.pre_filter_keep` kept as a legacy fallback name.
+PRE_FILTER_KEEP = int(CONFIG.get("candidate_count", _THRESHOLDS.get("pre_filter_keep", 50)))
+# Non-crypto (ai/tech/vc) candidates kept for the hot-QT lane — a constant, not a
+# knob: the post-dedupe non-crypto pool is small and Opus ranks on heat anyway.
+NONCRYPTO_KEEP = 15
+# Optional min heuristic score for the candidate pool (config `score_threshold`;
+# 0 disables). Softly enforced — see main(): never allowed to empty the pool.
+SCORE_THRESHOLD = int(CONFIG.get("score_threshold", 0))
 OPUS_MODEL = _MODELS.get("opus", "claude-opus-4-7")
 SEND_DELAY = float(_THRESHOLDS.get("send_delay_s", 1.0))
 BUDGET_SECONDS = int(_THRESHOLDS.get("budget_seconds", 550))
@@ -189,6 +212,7 @@ def dedupe_and_filter(owned_reads):
     pool = {}
     list_count_by_id = defaultdict(set)
     list_names_by_id = defaultdict(set)
+    cats_by_id = defaultdict(set)
     for t in list_tweets:
         tid = t.get("tweet_id")
         if not tid:
@@ -196,6 +220,9 @@ def dedupe_and_filter(owned_reads):
         list_count_by_id[tid].add(t.get("from_list_id"))
         if t.get("from_list_name"):
             list_names_by_id[tid].add(t.get("from_list_name"))
+        # None-safe: a pre-upgrade latest.json (no category field) resolves to
+        # crypto, keeping the core pipeline byte-identical to today.
+        cats_by_id[tid].add(t.get("from_list_category") or "crypto")
         if tid not in pool:
             pool[tid] = t
 
@@ -229,6 +256,10 @@ def dedupe_and_filter(owned_reads):
         t["list_count"] = len(list_count_by_id[tid])
         t["from_list_names"] = sorted(list_names_by_id[tid])
         t["in_following"] = author_in_following
+        # Rule: a tweet appearing in ANY crypto list stays crypto — the crypto
+        # pipeline sees exactly what it sees today.
+        cats = cats_by_id[tid]
+        t["category"] = "crypto" if ("crypto" in cats or not cats) else sorted(cats)[0]
         filtered.append(t)
 
     return filtered
@@ -250,6 +281,17 @@ def heuristic_score(t):
         e += 2
     elif rate > 0.003:
         e += 1
+    # VELOCITY: engagement per hour since posting — a 30-min-old tweet with 150
+    # engagements is hotter than a 6-hour-old one with 400. Catches risers before
+    # they peak (the whole point of engaging early). Missing created_at -> 0.
+    age_days = _days_since_iso_str(t.get("created_at"))
+    if age_days < 2:  # only meaningful for fresh tweets; guards the 1e9 sentinel
+        age_h = max(age_days * 24, 0.5)
+        velocity = eng_sum / age_h
+        if velocity > 150:
+            e += 2
+        elif velocity > 50:
+            e += 1
     if m.get("like_count", 0) > 1000:
         e += 2
     elif m.get("like_count", 0) > 300:
@@ -276,7 +318,14 @@ def heuristic_score(t):
     # THESIS (max 3)
     th = 0
     label = "general"
-    if any(k in text for k in ["consumer crypto", "onchain ux", "app layer", "consumer app"]):
+    cat = t.get("category") or "crypto"
+    if cat != "crypto":
+        # Non-crypto lane: flat provenance-as-thesis — the operator curated the
+        # list, that IS the fit signal; the crypto keywords below would zero
+        # these out. Engagement/provenance/novelty still score normally.
+        th += 2
+        label = cat
+    elif any(k in text for k in ["consumer crypto", "onchain ux", "app layer", "consumer app"]):
         th += 3
         label = "consumer-crypto"
     elif any(k in text for k in ["raised ", "seed round", "series a", "series b", "fundraise", "$m round", "closed $"]):
@@ -373,10 +422,16 @@ Thesis (what SGV invests in):
 - DeFi infrastructure, stablecoins, payment rails
 - Crypto-adjacent: AI agents, fintech, creator economy, prediction markets
 
-Your job today: from a pre-filtered list of top tweets and crypto-news headlines,
-produce ONE structured digest with content for TWO different audiences:
+Your job today: from a pre-filtered list of top tweets (crypto core + a separate
+non-crypto lane) and crypto-news headlines, produce ONE structured digest with
+content for TWO different audiences:
   1) The SGV team group chat (@{sgv_handle} fund voice)
   2) The partner's personal account (@{personal_handle} personal voice)
+
+Every candidate carries a `category` field. CATEGORY FENCING (strict):
+- `picks`, `sgv_ideas`, and `mist_ideas` must use ONLY category="crypto" candidates.
+- `hot_qt_picks` (below) uses ONLY category!="crypto" candidates.
+- No tweet_id may appear in more than one place anywhere in your output.
 
 Both channels share the same {TOP_N} top tweets and {SHOAL_N} news headlines. They DIFFER on tweet drafts:
   - {IDEAS_N_PER_VOICE} tweet ideas in @{sgv_handle} voice (for the fund account)
@@ -427,6 +482,23 @@ Ranking criteria (apply to each voice separately):
    - Controversy or contrarian framing
 
 For each pick, the `why` field must mention BOTH a fit reason AND a virality reason.
+
+========================================
+HOT NON-CRYPTO QTs: pick UP TO 3 (shared picks, per-voice drafts)
+========================================
+
+From the candidates with category != "crypto" (ai / tech / vc), pick UP TO 3 of
+the HOTTEST tweets worth quote-tweeting from a crypto-VC seat. If there are no
+non-crypto candidates (or none worth it), return "hot_qt_picks": [] — NEVER fill
+these slots with crypto tweets or mislabeled picks.
+
+Rank purely on heat + QT-ability: engagement velocity, crispness, named entities
+and concrete numbers, implicit quote-tweet potential, controversy or contrarian
+framing. Unique authors across the picks; prefer >=2 distinct categories when
+available. For each pick write TWO QT drafts of the SAME tweet — one in the
+@{sgv_handle} fund voice, one in the @{personal_handle} personal voice — each
+adding a crypto/agents/market-structure angle the original doesn't have. Do not
+write a personal rephrase of the fund draft; different entry points.
 
 ========================================
 TWEET IDEAS: voice-specific
@@ -533,10 +605,25 @@ The first element is treated as the primary_hook by the feedback loop.
       "inspo_url": "https://x.com/<author>/status/<id>  (REQUIRED for kind=quote_tweet)",
       "topic": "1-2 word topic tag"
     }}
+  ],
+  "hot_qt_picks": [
+    {{
+      "category": "ai|tech|vc  (the candidate's category field)",
+      "tweet_id": "...",
+      "setup": "1-sentence why THIS tweet is hot + what the SGV angle adds",
+      "sgv_draft": "<=260 char QT commentary in @{sgv_handle} voice (no URL — system appends it)",
+      "mist_draft": "<=260 char QT commentary in @{personal_handle} voice (different entry point)",
+      "inspo_label": "@author — first line of the original tweet",
+      "inspo_url": "https://x.com/<author>/status/<id>  (REQUIRED)",
+      "topic": "1-2 word topic tag",
+      "viral_hooks": ["concrete_number"]
+    }}
+    // ...UP TO 3 items; [] when no non-crypto candidate is worth it
   ]
 }}
 
-EACH voice array contains {IDEAS_N_PER_VOICE} regular tweets + 1 quote_tweet = {IDEAS_N_PER_VOICE + 1} items total."""
+EACH voice array contains {IDEAS_N_PER_VOICE} regular tweets + 1 quote_tweet = {IDEAS_N_PER_VOICE + 1} items total.
+hot_qt_picks is SHARED (not per-voice): each item carries both drafts."""
 
 
 def _feedback_block():
@@ -636,6 +723,25 @@ def _print_steering_status_if_enabled():
           f"engagement on_rec/off_rec = {on_n}/{off_n}, lift {lift_str}")
 
 
+def _load_idea_memory(days=7, cap=40):
+    """Recent drafted ideas as DO-NOT-REPEAT lines for the Opus USER message —
+    the same anti-repetition pattern insights.py uses (never in the cached
+    system prompt). Empty list on any failure -> today's behavior."""
+    try:
+        import feedback_db as _fdb
+        rows = _fdb.get_recent_ideas(days=days)
+    except Exception:
+        return []
+    lines, seen = [], set()
+    for r in rows:
+        line = (f"[{(r.get('generated_at') or '')[:10]} {r.get('voice') or '?'}] "
+                f"topic={r.get('topic') or '?'} | draft: {(r.get('draft') or '')[:120]}")
+        if line not in seen:
+            seen.add(line)
+            lines.append(line)
+    return lines[:cap]
+
+
 def opus_pick(candidates, shoal_news):
     """Call Claude Opus with pre-filtered candidates + news. Returns parsed JSON."""
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -663,6 +769,7 @@ def opus_pick(candidates, shoal_news):
             "in_following": t.get("in_following", False),
             "heuristic_score": t["_heuristic_score"],
             "thesis_label": t["_thesis_label"],
+            "category": t.get("category") or "crypto",
             "url": t.get("tweet_url"),
         })
 
@@ -677,12 +784,23 @@ def opus_pick(candidates, shoal_news):
         f"{json.dumps(compact, indent=2)}\n\n"
         f"NEWS ({len(compact_shoal)} items from last 20h):\n"
         f"{json.dumps(compact_shoal, indent=2)}\n\n"
-        "Return the structured JSON as specified. No preamble, no explanation, JSON only."
     )
+    memory_lines = _load_idea_memory()
+    if memory_lines:
+        user_msg += (
+            "ALREADY DRAFTED IN THE LAST 7 DAYS — DO NOT REPEAT:\n"
+            + "\n".join("  - " + l for l in memory_lines)
+            + "\nHARD RULE: a topic+angle above is BURNED even reworded. Take a "
+            "genuinely different angle or different source material for every "
+            "idea and QT draft in this output.\n\n"
+        )
+    user_msg += "Return the structured JSON as specified. No preamble, no explanation, JSON only."
 
     resp = client.messages.create(
         model=OPUS_MODEL,
-        max_tokens=4000,
+        # 5000 (was 4000): the hot_qt_picks section adds ~6 drafts of output; a
+        # verbose day at 4000 would truncate -> RuntimeError -> whole digest aborts.
+        max_tokens=5000,
         system=[{
             "type": "text",
             "text": SYSTEM_PROMPT,
@@ -691,7 +809,10 @@ def opus_pick(candidates, shoal_news):
         messages=[{"role": "user", "content": user_msg}],
     )
 
-    raw = resp.content[0].text.strip()
+    if getattr(resp, "stop_reason", None) == "max_tokens":
+        raise RuntimeError("Opus output truncated at max_tokens — JSON would be invalid")
+    # First TEXT block (newer models may emit a thinking block at content[0])
+    raw = next((b.text for b in resp.content if getattr(b, "type", "") == "text"), "").strip()
     # Parse JSON (tolerate code fences)
     if raw.startswith("```"):
         raw = re.sub(r"^```(?:json)?\n?|\n?```$", "", raw)
@@ -703,11 +824,12 @@ def opus_pick(candidates, shoal_news):
         "cache_creation_input_tokens": getattr(resp.usage, "cache_creation_input_tokens", 0),
         "cache_read_input_tokens": getattr(resp.usage, "cache_read_input_tokens", 0),
     }
+    # Opus 4.5+ pricing: $5/M in, $25/M out, 1.25× in for cache write, 0.1× for cache read
     cost = (
-        usage["input_tokens"] * 15 / 1_000_000 +
-        usage["output_tokens"] * 75 / 1_000_000 +
-        usage["cache_creation_input_tokens"] * 18.75 / 1_000_000 +  # 1.25× input for cache write
-        usage["cache_read_input_tokens"] * 1.5 / 1_000_000
+        usage["input_tokens"] * 5 / 1_000_000 +
+        usage["output_tokens"] * 25 / 1_000_000 +
+        usage["cache_creation_input_tokens"] * 6.25 / 1_000_000 +
+        usage["cache_read_input_tokens"] * 0.5 / 1_000_000
     )
     return parsed, usage, cost
 
@@ -753,6 +875,23 @@ def _send_via_bot(chat_id, text, timeout=20):
     if not result.get("ok"):
         raise RuntimeError(f"bot send failed: {result}")
     return result
+
+
+def _alert_operator(msg, dry_run):
+    """Fatal-path alert to BOTH the fund group and the personal DM. All three
+    credit outages in week 1 DID alert the group — and got drowned; the
+    operator's DM is what actually gets seen."""
+    if dry_run:
+        return
+    try:
+        subprocess.run(["bash", SEND_SCRIPT, DELIVERY_CHAT, msg], check=False, timeout=20)
+    except Exception:
+        pass
+    try:
+        if DELIVERY_CHAT_MIST:
+            _send_via_bot(DELIVERY_CHAT_MIST, msg)
+    except Exception:
+        pass
 
 
 def make_sender(dry_run, chat_id, label="", via="user_session"):
@@ -861,8 +1000,16 @@ def _emit_idea(send, emoji, num, kind, topic, draft, inspo_label, inspo_url=""):
     send(body)
 
 
+# Set by main() — when True, delivery never touches feedback.db (a dry run must
+# not seed the feedback loop with ideas that were never actually delivered).
+DRY_RUN = False
+
+
 def _save_idea_to_db(idea_dict):
-    """Persist one idea row. Silent-pass on DB import failure (db is optional infra)."""
+    """Persist one idea row. Silent-pass on DB import failure (db is optional infra).
+    No-op on --dry-run."""
+    if DRY_RUN:
+        return None
     try:
         import feedback_db as _db
         return _db.save_idea(idea_dict)
@@ -925,6 +1072,53 @@ def _deliver_section1_tweet_ideas(opus_out, send, voice_key, digest_run_id, voic
             "raw":              idea,
         })
     return sent_count
+
+
+def _deliver_section1b_hot_qts(opus_out, send, voice, digest_run_id):
+    """Section 1b — hot NON-CRYPTO QTs (ai/tech/vc): shared Opus picks, per-voice
+    drafts. Each pick = context message + standalone QT draft (inspo URL appended
+    so X auto-embeds the quote on paste). Saved with source_module
+    'opus_noncrypto_qt' so the feedback loop learns whether the lane earns
+    engagement — zero extra learning code."""
+    picks = (opus_out.get("hot_qt_picks") or [])[:3]
+    if not picks:
+        send("━━ 🔥 HOT QTs — AI / tech / VC ━━\n(none this run)")
+        return 0
+    send("━━ 🔥 HOT QTs — AI / tech / VC ━━")
+    delivered = 0
+    for i, p in enumerate(picks, 1):
+        draft = (p.get("sgv_draft" if voice == "sgv" else "mist_draft") or "").strip()
+        if not draft:
+            continue
+        if voice == "mist":
+            draft = _capitalize_mist(draft)
+        _emit_idea(
+            send,
+            emoji="🔥",
+            num=i,
+            kind="quote_tweet",
+            topic=p.get("topic") or p.get("category") or "",
+            draft=draft,
+            inspo_label=p.get("inspo_label") or p.get("setup") or "",
+            inspo_url=p.get("inspo_url") or "",
+        )
+        delivered += 1
+        _save_idea_to_db({
+            "digest_run_id":    digest_run_id,
+            "source_module":    "opus_noncrypto_qt",
+            "voice":            voice,
+            "topic":            p.get("topic") or p.get("category"),
+            "draft":            draft,
+            "inspo_kind":       "noncrypto_qt",
+            "inspo_id":         p.get("tweet_id"),
+            "inspo_label":      p.get("inspo_label"),
+            "inspo_snippet":    p.get("setup"),
+            "inspo_url":        p.get("inspo_url"),
+            "viral_hooks":      p.get("viral_hooks") or [],
+            "feedback_profile_id": ACTIVE_FEEDBACK_PROFILE_ID,
+            "raw":              p,
+        })
+    return delivered
 
 
 def _deliver_section2_insights(insights_result, send, voice, digest_run_id):
@@ -1033,19 +1227,79 @@ def _deliver_section3_good_content(send, voice, digest_run_id):
             "feedback_profile_id": ACTIVE_FEEDBACK_PROFILE_ID,
             "raw":              gc,
         })
-        # Mark this content as 'reminded' so it doesn't recur
-        try:
-            _db.set_good_content_status(
-                gc["id"],
-                "sent" if gc.get("status") != "sent" else "sent",
-                reminded_at=_db.now_iso(),
-            )
-        except Exception:
-            pass
+        # Mark this content as 'reminded' so it doesn't recur.
+        # Never on --dry-run: a preview must not consume the pending item.
+        if not DRY_RUN:
+            try:
+                _db.set_good_content_status(
+                    gc["id"],
+                    "sent" if gc.get("status") != "sent" else "sent",
+                    reminded_at=_db.now_iso(),
+                )
+            except Exception:
+                pass
+    # Staleness nudge: resurfacing keeps this section non-empty, which used to
+    # hide the "send gc:" hint exactly when the library had gone stale.
+    try:
+        row = _db._conn().execute(
+            "SELECT MAX(submitted_at) AS last FROM good_content").fetchone()
+        last = row["last"] if row else None
+        if last:
+            last_dt = datetime.datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+            if last_dt.tzinfo is None:
+                last_dt = last_dt.replace(tzinfo=datetime.timezone.utc)
+            age_d = (datetime.datetime.now(datetime.timezone.utc) - last_dt).days
+            if age_d >= 14:
+                send(f"(all resurfaced — no new gc: links in {age_d}d. "
+                     f"send 'gc: <url>' in DM to add fresh material)")
+    except Exception:
+        pass
     return delivered
 
 
-def deliver_digest_dual(picks_by_id, opus_out, shoal_news, insights_result, dry_run):
+def _deliver_section4_call_drafts(call_result, send, digest_run_id):
+    """Section 4 — personal-only: anonymized tweet drafts from recent calls
+    (call_drafts.py two-stage lane). Skips silently when the lane is off."""
+    calls = (call_result or {}).get("call_drafts") or []
+    if not calls:
+        return 0
+    send("━━ 4️⃣ CALL DRAFTS — from your recent calls ━━")
+    delivered = 0
+    for ci, call in enumerate(calls, 1):
+        for di, d in enumerate(call.get("drafts") or [], 1):
+            draft = _capitalize_mist((d.get("draft") or "").strip())
+            if not draft:
+                continue
+            _emit_idea(
+                send,
+                emoji="🎙",
+                num=delivered + 1,
+                kind="tweet",
+                topic=f"{call.get('call_label', f'call {ci}')} · {d.get('angle', '')}",
+                draft=draft,
+                inspo_label=d.get("source_moment") or "call moment",
+                inspo_url="",
+            )
+            delivered += 1
+            _save_idea_to_db({
+                "digest_run_id":    digest_run_id,
+                "source_module":    "call_drafts",
+                "voice":            "mist",
+                "topic":            d.get("angle"),
+                "draft":            draft,
+                "inspo_kind":       "call",
+                "inspo_id":         call.get("call_label"),
+                "inspo_label":      d.get("source_moment"),
+                "inspo_snippet":    None,
+                "inspo_url":        None,
+                "viral_hooks":      d.get("viral_hooks") or [],
+                "feedback_profile_id": ACTIVE_FEEDBACK_PROFILE_ID,
+                "raw":              d,
+            })
+    return delivered
+
+
+def deliver_digest_dual(picks_by_id, opus_out, shoal_news, insights_result, dry_run, call_result=None):
     """Deliver the slim 3-section digest:
       Section 1 — Tweet ideas (Opus, with inspo)
       Section 2 — SGV insight tweet ideas (Sonnet, both voices)
@@ -1063,24 +1317,28 @@ def deliver_digest_dual(picks_by_id, opus_out, shoal_news, insights_result, dry_
     sgv_send, sgv_stats = make_sender(dry_run, DELIVERY_CHAT_SGV, "SGV", via="user_session")
     sgv_send(f"☀️ SGV Morning Brief — {today}")
     s1 = _deliver_section1_tweet_ideas(opus_out, sgv_send, "sgv_ideas", digest_run_id, "sgv")
+    s1b = _deliver_section1b_hot_qts(opus_out, sgv_send, "sgv", digest_run_id)
     s2 = _deliver_section2_insights(insights_result, sgv_send, "sgv", digest_run_id)
     s3 = 0   # good_content is personal-only by design
-    print(f"  SGV sections: tweet_ideas={s1} insights={s2} good_content=skipped(personal-only)")
+    print(f"  SGV sections: tweet_ideas={s1} hot_qts={s1b} insights={s2} good_content=skipped(personal-only)")
 
     # Personal DM — personal-voice only, sent as the configured bot.
     print(f"[deliver] → personal DM ({DELIVERY_CHAT_MIST}) via {_bot_label()}")
     mist_send, mist_stats = make_sender(dry_run, DELIVERY_CHAT_MIST, "Mist", via="bot")
     mist_send(f"☀️ Personal Morning Brief — {today}")
     m1 = _deliver_section1_tweet_ideas(opus_out, mist_send, "mist_ideas", digest_run_id, "mist")
+    m1b = _deliver_section1b_hot_qts(opus_out, mist_send, "mist", digest_run_id)
     m2 = _deliver_section2_insights(insights_result, mist_send, "mist", digest_run_id)
     m3 = _deliver_section3_good_content(mist_send, "mist", digest_run_id)
-    print(f"  Mist sections: tweet_ideas={m1} insights={m2} good_content={m3}")
+    m4 = _deliver_section4_call_drafts(call_result, mist_send, digest_run_id)
+    print(f"  Mist sections: tweet_ideas={m1} hot_qts={m1b} insights={m2} good_content={m3} call_drafts={m4}")
 
     return {
         "sgv":  sgv_stats(),
         "mist": mist_stats(),
-        "sgv_section_counts":  {"tweet_ideas": s1, "insights": s2, "good_content": s3},
-        "mist_section_counts": {"tweet_ideas": m1, "insights": m2, "good_content": m3},
+        "sgv_section_counts":  {"tweet_ideas": s1, "hot_qts": s1b, "insights": s2, "good_content": s3},
+        "mist_section_counts": {"tweet_ideas": m1, "hot_qts": m1b, "insights": m2, "good_content": m3,
+                                "call_drafts": m4},
     }
 
 
@@ -1088,9 +1346,11 @@ def deliver_digest_dual(picks_by_id, opus_out, shoal_news, insights_result, dry_
 # MAIN
 # ─────────────────────────────────────────
 def main():
+    global DRY_RUN
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+    DRY_RUN = args.dry_run
 
     t0 = time.time()
     print(f"== SGV Tweet Digest {datetime.datetime.now().isoformat()} ==")
@@ -1099,10 +1359,7 @@ def main():
     # Hard-require owned-reads
     if not os.path.exists(OWNED_READS_PATH):
         print(f"FATAL: {OWNED_READS_PATH} missing", file=sys.stderr)
-        if not args.dry_run:
-            subprocess.run(["bash", SEND_SCRIPT, DELIVERY_CHAT,
-                          "⚠️ SGV digest ABORTED: owned-reads latest.json missing."],
-                          check=False)
+        _alert_operator("⚠️ SGV digest ABORTED: owned-reads latest.json missing.", args.dry_run)
         sys.exit(2)
 
     owned = load_inputs()
@@ -1123,14 +1380,13 @@ def main():
     # Path 1: explicit credits-depleted (Bearer-side 402)
     if gather_stats.get("credits_depleted") or any("credits-depleted" in str(e) for e in gather_errors):
         print("FATAL: gather reported credits_depleted upstream", file=sys.stderr)
-        if not args.dry_run:
-            msg = (
-                "🛑 SGV digest cannot run today.\n\n"
-                "X API credits depleted at the developer-account level. "
-                "Top up at https://console.x.com → your project → Pricing/Usage. "
-                "The next scheduled gather resumes automatically once credits are restored."
-            )
-            subprocess.run(["bash", SEND_SCRIPT, DELIVERY_CHAT, msg], check=False)
+        msg = (
+            "🛑 SGV digest cannot run today.\n\n"
+            "X API credits depleted at the developer-account level. "
+            "Top up at https://console.x.com → your project → Pricing/Usage. "
+            "The next scheduled gather resumes automatically once credits are restored."
+        )
+        _alert_operator(msg, args.dry_run)
         sys.exit(2)
 
     # Path 2: gather data is empty/stale — diagnose and alert with specifics
@@ -1157,8 +1413,7 @@ def main():
             f"Diagnose: `ssh {VPS_HOST} \"tail -30 <gather cron log>\"`"
         )
         print(f"FATAL: list_tweets=0 — {reason}", file=sys.stderr)
-        if not args.dry_run:
-            subprocess.run(["bash", SEND_SCRIPT, DELIVERY_CHAT, msg], check=False)
+        _alert_operator(msg, args.dry_run)
         sys.exit(2)
 
     if cap_hit:
@@ -1171,9 +1426,22 @@ def main():
     filtered = dedupe_and_filter(owned)
     for t in filtered:
         heuristic_score(t)
-    filtered.sort(key=lambda t: -t["_heuristic_score"])
-    candidates = filtered[:PRE_FILTER_KEEP]
-    print(f"  heuristic stage: {len(filtered)} filtered → top {len(candidates)} for Opus")
+    crypto_pool = [t for t in filtered if (t.get("category") or "crypto") == "crypto"]
+    noncrypto_pool = [t for t in filtered if (t.get("category") or "crypto") != "crypto"]
+    # Optional min-score gate (config score_threshold) — crypto lane only (the
+    # non-crypto lane rides its list curation), and soft: never empties the pool.
+    if SCORE_THRESHOLD > 0:
+        gated = [t for t in crypto_pool if t["_heuristic_score"] >= SCORE_THRESHOLD]
+        if len(gated) >= TOP_N:
+            crypto_pool = gated
+        else:
+            print(f"  score_threshold={SCORE_THRESHOLD} would leave only {len(gated)} tweets — gate skipped this run")
+    crypto_pool.sort(key=lambda t: -t["_heuristic_score"])
+    noncrypto_pool.sort(key=lambda t: -t["_heuristic_score"])
+    candidates = crypto_pool[:PRE_FILTER_KEEP] + noncrypto_pool[:NONCRYPTO_KEEP]
+    print(f"  heuristic stage: {len(filtered)} filtered → "
+          f"{min(len(crypto_pool), PRE_FILTER_KEEP)} crypto + "
+          f"{min(len(noncrypto_pool), NONCRYPTO_KEEP)} non-crypto for Opus")
 
     if not candidates:
         print("FATAL: no candidates after filter", file=sys.stderr)
@@ -1186,14 +1454,22 @@ def main():
                 f"Possibly all lists returned empty or were skipped. "
                 f"Check the gather cron log for diagnostics."
             )
-            subprocess.run(["bash", SEND_SCRIPT, DELIVERY_CHAT, msg], check=False)
+            _alert_operator(msg, False)
         sys.exit(2)
 
     print(f"  calling Opus...")
-    opus_out, usage, cost = opus_pick(candidates, shoal)
+    try:
+        opus_out, usage, cost = opus_pick(candidates, shoal)
+    except Exception as e:
+        # A cron box would otherwise fail silently — one alert, then non-zero exit.
+        print(f"FATAL: Opus pick failed: {e}", file=sys.stderr)
+        _alert_operator(f"⚠️ SGV digest ABORTED: Opus call failed ({str(e)[:200]}). "
+                        f"No digest today — check the digest log.", args.dry_run)
+        sys.exit(3)
     print(f"  Opus returned: {len(opus_out.get('picks',[]))} picks, "
           f"sgv_shoal={len(opus_out.get('sgv_shoal_picks',[]))} mist_shoal={len(opus_out.get('mist_shoal_picks',[]))}, "
-          f"sgv_ideas={len(opus_out.get('sgv_ideas',[]))} mist_ideas={len(opus_out.get('mist_ideas',[]))}")
+          f"sgv_ideas={len(opus_out.get('sgv_ideas',[]))} mist_ideas={len(opus_out.get('mist_ideas',[]))}, "
+          f"hot_qt_picks={len(opus_out.get('hot_qt_picks',[]))}")
     print(f"  usage: {usage}")
     print(f"  cost: ${cost:.4f}")
 
@@ -1214,19 +1490,36 @@ def main():
         insights_result = {"insights_sgv": [], "insights_mist": [],
                            "errors": [f"insights module crashed: {e}"], "cost_usd": 0}
 
-    # Generate Sonnet drafts for any ingested good_content rows that don't have drafts yet
-    print("  generating good_content drafts...")
+    # Generate Sonnet drafts for any ingested good_content rows that don't have drafts yet.
+    # Skipped entirely on --dry-run: it spends Sonnet AND writes drafts to feedback.db.
     gc_cost = 0.0
+    if args.dry_run:
+        print("  good_content drafting: skipped (--dry-run)")
+    else:
+        print("  generating good_content drafts...")
+        try:
+            import good_content as _gc_mod
+            gc_result = _gc_mod.run(limit=3, verbose=True)
+            gc_cost = (gc_result or {}).get("cost_usd", 0) or 0
+            print(f"  good_content: drafted={gc_result.get('drafted',0)} cost=${gc_cost:.4f}")
+        except Exception as e:
+            print(f"  good_content drafter FAILED (non-fatal): {e}")
+
+    # Call-drafts lane (optional; FIREFLIES_API_KEY-gated; personal-only)
+    call_result = None
+    cd_cost = 0.0
     try:
-        import good_content as _gc_mod
-        gc_result = _gc_mod.run(limit=3, verbose=True)
-        gc_cost = (gc_result or {}).get("cost_usd", 0) or 0
-        print(f"  good_content: drafted={gc_result.get('drafted',0)} cost=${gc_cost:.4f}")
+        import call_drafts as _cd_mod
+        call_result = _cd_mod.run(dry_run=args.dry_run, verbose=True)
+        cd_cost = (call_result or {}).get("cost_usd", 0) or 0
+        n_calls = len((call_result or {}).get("call_drafts") or [])
+        print(f"  call_drafts: {n_calls} calls drafted | cost ${cd_cost:.4f}")
     except Exception as e:
-        print(f"  good_content drafter FAILED (non-fatal): {e}")
+        print(f"  call_drafts FAILED (non-fatal): {e}")
 
     picks_by_id = {t["tweet_id"]: t for t in candidates}
-    delivery_stats = deliver_digest_dual(picks_by_id, opus_out, shoal, insights_result, args.dry_run)
+    delivery_stats = deliver_digest_dual(picks_by_id, opus_out, shoal, insights_result, args.dry_run,
+                                         call_result=call_result)
 
     duration_s = time.time() - t0
     sgv_s = delivery_stats["sgv"]
@@ -1242,11 +1535,14 @@ def main():
     total_cost = cost + (insights_cost or 0)
     footer = (
         f"📊 sgv sections: ideas={sgv_section.get('tweet_ideas',0)}/"
+        f"hotqt={sgv_section.get('hot_qts',0)}/"
         f"insights={insights_count_sgv}/gc={sgv_section.get('good_content',0)} · "
         f"mist sections: ideas={mist_section.get('tweet_ideas',0)}/"
-        f"insights={insights_count_mist}/gc={mist_section.get('good_content',0)} · "
+        f"hotqt={mist_section.get('hot_qts',0)}/"
+        f"insights={insights_count_mist}/gc={mist_section.get('good_content',0)}/"
+        f"calls={mist_section.get('call_drafts',0)} · "
         f"sent sgv={sgv_s['sent']} mist={mist_s['sent']} fail={total_fail} · "
-        f"Opus ${cost:.3f} + Sonnet ${insights_cost:.3f} · {duration_s:.0f}s"
+        f"Opus ${cost:.3f} + Sonnet ${insights_cost + cd_cost:.3f} · {duration_s:.0f}s"
     )
     if not args.dry_run:
         # Fund group footer via user session (group send)
@@ -1268,6 +1564,7 @@ def main():
         "candidates_to_opus": len(candidates),
         "shoal_msgs": len(shoal),
         "picks": len(opus_out.get("picks", [])),
+        "hot_qt_picks": len(opus_out.get("hot_qt_picks", [])),
         "sgv_ideas": len(opus_out.get("sgv_ideas", [])),
         "mist_ideas": len(opus_out.get("mist_ideas", [])),
         "sgv_shoal_picks": len(opus_out.get("sgv_shoal_picks", [])),
@@ -1283,6 +1580,8 @@ def main():
         "insights_mist_count": insights_count_mist,
         "insights_cost_usd":   round(insights_cost or 0, 4),
         "insights_source_counts": (insights_result or {}).get("source_counts", {}),
+        "call_drafts": len((call_result or {}).get("call_drafts") or []),
+        "call_drafts_cost_usd": round(cd_cost or 0, 4),
         "sgv_section_counts":  sgv_section,
         "mist_section_counts": mist_section,
     }

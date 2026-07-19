@@ -1,6 +1,6 @@
 ---
 name: sgv-tweet-digest
-version: 0.1.0
+version: 0.3.0
 description: >-
   Drafts a daily dual-voice crypto-Twitter digest from your X follow-graph and
   curated Lists: scores candidate tweets with a metrics-first 0-18 rubric, picks
@@ -99,15 +99,24 @@ This is what `/sgv-tweet-digest` runs. It:
    via `${CLAUDE_SKILL_DIR}/scripts/telegram/read.py` for market context.
 2. **Scores** every candidate with the metrics-first **0-18 rubric** and keeps the top
    `candidate_count` (config) for the model. Full rubric: [reference/rubric.md](reference/rubric.md).
-3. **Picks + drafts (Opus)** — selects the top 3 tweets to engage (one action each, with
-   variety constraints) and writes, **per voice**, 2 original tweets + 1 quote-tweet idea.
+3. **Picks + drafts (Opus)** — selects the top 3 crypto tweets to engage (one action each,
+   with variety constraints) and writes, **per voice**, 2 original tweets + 1 quote-tweet idea.
    The two voices must cover different angles. See [reference/voice-guide.md](reference/voice-guide.md).
+   If any Lists are category-tagged `ai`/`tech`/`vc` in config, Opus also picks **up to 3 hot
+   non-crypto QTs** (shared picks, one draft per voice each) delivered as a separate 🔥 block.
 4. **Insight ideas (Sonnet, optional)** — `scripts/insights.py` distills the last 7 days of
    fund-internal data into up to 3 anonymized drafts per voice. Each source (Notion / Gmail /
    Fireflies) runs only when configured and is skipped with a logged note otherwise; a failure
-   here is non-fatal.
+   here is non-fatal. Anti-repetition is built in: recently-featured Notion deals rotate out
+   (3-run cooldown), the last 7 runs' insights are injected as a DO-NOT-REPEAT block, and the
+   day's top-20 timeline tweets are added as public context for fresh angles (`timeline[i]` refs).
 5. **Good-content ideas (Sonnet, personal voice only)** — `scripts/good_content.py` drafts from
    URLs you flagged via the `gc:` Telegram poller (rows in `feedback.db`).
+5b. **Call drafts (Sonnet, personal voice only, optional)** — `scripts/call_drafts.py` pulls your
+   recent Fireflies calls (`FIREFLIES_API_KEY`-gated) and drafts up to 3 anonymized tweets per
+   call via a two-stage extract→draft pipeline: names/metrics/verbatim quotes are stripped AT
+   EXTRACTION, so the drafter never sees them. Same real-denylist safety gate as insights.
+   Each call is processed once (seen-ids tracked in `feedback.db`). ~$0.05-0.08/call, max 3/day.
 6. **Delivers** (see below) and **logs** `stats.jsonl` + saves every drafted idea to
    `feedback.db` for the loop.
 
@@ -121,13 +130,16 @@ This is what `/sgv-tweet-digest` runs. It:
 Use `$VENV_PYTHON` (the Telethon-capable interpreter) for `digest.py` — system python3
 will fail the Telegram reads/sends.
 
-### Feedback loop  (`feedback_profile.py` + `steering_analyzer.py`, ~13:30 UTC)
-After tweets have been live long enough, joins drafted ideas to posted tweets, computes
-per-archetype engagement, and asks Sonnet for do-more / do-less rules. The next digest run
+### Feedback loop  (`idea_matcher.py` ~12:40 UTC, then `feedback_profile.py` + `steering_analyzer.py` ~13:30 UTC)
+`idea_matcher.py` links your actually-posted tweets to the drafted ideas that inspired them
+(TF-IDF prefilter, then a small Sonnet judge, ~$0.003/pair) — it writes `tweet_idea_matches`,
+which is what makes the rest of the loop live. `feedback_profile.py` then computes per-archetype
+engagement over those matches and asks Sonnet for do-more / do-less rules; the next digest run
 injects that signal. `steering_analyzer.py` measures whether the model actually shifted toward
 the recommended archetypes and auto-suppresses weak ones.
 
 ```bash
+"$VENV_PYTHON" ${CLAUDE_SKILL_DIR}/scripts/idea_matcher.py
 "$VENV_PYTHON" ${CLAUDE_SKILL_DIR}/scripts/feedback_profile.py
 python3 ${CLAUDE_SKILL_DIR}/scripts/steering_analyzer.py
 ```

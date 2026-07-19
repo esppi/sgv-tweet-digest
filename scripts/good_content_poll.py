@@ -28,7 +28,7 @@ import feedback_db as db
 # Shared TG auth helper (API_ID, API_HASH, canonical session path, Telethon import)
 # lives under scripts/telegram/.
 sys.path.insert(0, os.path.join(HERE, "telegram"))
-from auth import make_client
+from auth import make_client, session_lock
 
 try:
     import trafilatura
@@ -101,10 +101,22 @@ def detect_kind(url):
 
 
 # ─── FETCH HELPERS ───
+_MAX_FETCH_BYTES = 5 * 1024 * 1024  # 5 MB cap — a gc: link to a huge file must not OOM the poller
+
+
 def _http_get(url, timeout=30):
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 SGV-bot"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read()
+        try:
+            clen = int(resp.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            clen = 0
+        if clen > _MAX_FETCH_BYTES:
+            raise ValueError(f"response too large ({clen} bytes > {_MAX_FETCH_BYTES} cap)")
+        data = resp.read(_MAX_FETCH_BYTES + 1)  # streamed cap for chunked/unsized responses
+        if len(data) > _MAX_FETCH_BYTES:
+            raise ValueError(f"response exceeded {_MAX_FETCH_BYTES}-byte cap")
+        return data
 
 
 def fetch_article(url):
@@ -406,7 +418,10 @@ async def poll(verbose=True):
 
     counters = {"new": 0, "ingested": 0, "failed": 0, "already": 0, "no_url": 0}
 
-    async with make_client() as client:
+    # session_lock: the digest/read/send helpers hold the same Telethon session —
+    # concurrent use of one session file gets it revoked by Telegram.
+    with session_lock():
+      async with make_client() as client:
         for chat_target, cursor_key, only_outgoing in POLL_SOURCES:
             source_label = "saved" if chat_target == "me" else chat_target
 

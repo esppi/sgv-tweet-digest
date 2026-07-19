@@ -119,6 +119,13 @@ def _meta(value):
 
 
 def _next_cursor(payload):
+    if isinstance(payload, dict):
+        value = _first_present(
+            payload,
+            ("next_token", "nextToken", "next_cursor", "nextCursor", "cursor", "after"),
+        )
+        if value not in (None, ""):
+            return str(value)
     meta = _meta(payload)
     value = _first_present(
         meta,
@@ -208,12 +215,30 @@ def normalize_tweet(record, owned_signal):
         "text": str(text),
         "created_at": str(created_at),
         "metrics": {
-            "like_count": _metric(metrics or data, ("like_count", "favorite_count", "likes")),
-            "retweet_count": _metric(metrics or data, ("retweet_count", "retweets")),
-            "reply_count": _metric(metrics or data, ("reply_count", "replies")),
-            "quote_count": _metric(metrics or data, ("quote_count", "quotes")),
-            "bookmark_count": _metric(metrics or data, ("bookmark_count", "bookmarks")),
-            "impression_count": _metric(metrics or data, ("impression_count", "views", "view_count")),
+            "like_count": _metric(
+                metrics or data,
+                ("like_count", "likeCount", "favorite_count", "likes"),
+            ),
+            "retweet_count": _metric(
+                metrics or data,
+                ("retweet_count", "retweetCount", "retweets"),
+            ),
+            "reply_count": _metric(
+                metrics or data,
+                ("reply_count", "replyCount", "replies"),
+            ),
+            "quote_count": _metric(
+                metrics or data,
+                ("quote_count", "quoteCount", "quotes"),
+            ),
+            "bookmark_count": _metric(
+                metrics or data,
+                ("bookmark_count", "bookmarkCount", "bookmarks"),
+            ),
+            "impression_count": _metric(
+                metrics or data,
+                ("impression_count", "viewCount", "views", "view_count"),
+            ),
         },
         "entities": data.get("entities") or {},
         "source": "hermes_tweet_" + owned_signal,
@@ -240,7 +265,7 @@ def normalize_tweet(record, owned_signal):
 def fetch_hermes_list_members(list_id, page_size=100):
     payload = _request(
         "/api/v1/x/lists/" + urllib.parse.quote(str(list_id)) + "/members",
-        {"pageSize": str(page_size)},
+        {"pageSize": str(min(200, max(20, page_size)))},
     )
     return [
         user
@@ -252,7 +277,10 @@ def fetch_hermes_list_members(list_id, page_size=100):
 def fetch_hermes_list_tweets(list_id, max_results=100):
     payload = _request(
         "/api/v1/x/lists/" + urllib.parse.quote(str(list_id)) + "/tweets",
-        {"includeReplies": "true"},
+        {
+            "includeReplies": "true",
+            "pageSize": str(min(100, max(1, max_results))),
+        },
     )
     tweets = [
         tweet
@@ -268,7 +296,7 @@ def fetch_hermes_list_tweets(list_id, max_results=100):
 def fetch_hermes_following(user_id, max_results=200):
     payload = _request(
         "/api/v1/x/users/" + urllib.parse.quote(str(user_id)) + "/following",
-        {"pageSize": str(max_results)},
+        {"pageSize": str(min(200, max(20, max_results)))},
     )
     return [
         user
@@ -278,7 +306,11 @@ def fetch_hermes_following(user_id, max_results=200):
 
 
 def fetch_hermes_user_tweets(user_id, max_results=10, pagination_token=None):
-    params = {"includeReplies": "true", "includeParentTweet": "true"}
+    params = {
+        "includeReplies": "true",
+        "includeParentTweet": "true",
+        "pageSize": str(min(100, max(1, max_results))),
+    }
     if pagination_token:
         params["cursor"] = pagination_token
     payload = _request(

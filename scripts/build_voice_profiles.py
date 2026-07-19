@@ -47,13 +47,26 @@ def _state_dir():
     return os.path.join(base, "sgv-tweet-digest")
 
 
+def _env_path(name, default):
+    """Env-sourced path with $VAR/~ expansion (systemd EnvironmentFile does not
+    expand $HOME — a literal '$HOME/...' value must still resolve here)."""
+    v = os.environ.get(name)
+    if not v:
+        return default
+    return os.path.expanduser(os.path.expandvars(v))
+
+
 def load_config():
-    """Load the operator's config.json, falling back to the shipped example.
-    Resolution: $SGV_CONFIG -> <state>/config.json -> <skill>/config.example.json.
-    """
+    """Load the operator's config.json — the ONE canonical chain shared by every
+    loader: $SGV_CONFIG -> $XDG_CONFIG_HOME/sgv-tweet-digest/config.json ->
+    <skill_dir>/config.json (the README quickstart copy) -> the shipped example."""
+    cfg_base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+        os.path.expanduser("~"), ".config"
+    )
     candidates = [
-        os.environ.get("SGV_CONFIG"),
-        os.path.join(_state_dir(), "config.json"),
+        _env_path("SGV_CONFIG", None),
+        os.path.join(cfg_base, "sgv-tweet-digest", "config.json"),
+        os.path.join(_skill_dir(), "config.json"),
         os.path.join(_skill_dir(), "config.example.json"),
     ]
     for p in candidates:
@@ -71,7 +84,7 @@ MODELS = CONFIG.get("models", {}) if isinstance(CONFIG, dict) else {}
 OPUS_MODEL = MODELS.get("opus", "claude-opus-4-7")
 
 # Writable destination for the regenerated profiles (never the shipped seed).
-VOICE_OUT = os.environ.get(
+VOICE_OUT = _env_path(
     "SGV_VOICE_PROFILES", os.path.join(_state_dir(), "voice_profiles.json")
 )
 
@@ -113,7 +126,7 @@ def fetch_originals(user_id, bearer, count=30):
            f"&exclude=retweets,replies")
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {bearer}"})
     try:
-        r = urllib.request.urlopen(req)
+        r = urllib.request.urlopen(req, timeout=30)
         return json.loads(r.read()).get("data", []) or []
     except urllib.error.HTTPError as e:
         print(f"  fetch error {e.code}: {e.read().decode()[:200]}", file=sys.stderr)
@@ -166,11 +179,13 @@ Be precise and useful — these will be used as few-shot context to write tweets
         max_tokens=2000,
         messages=[{"role": "user", "content": prompt}],
     )
-    raw = resp.content[0].text.strip()
+    # First TEXT block (newer models may emit a thinking block at content[0])
+    raw = next((b.text for b in resp.content if getattr(b, "type", "") == "text"), "").strip()
     if raw.startswith("```"):
         import re
         raw = re.sub(r"^```(?:json)?\n?|\n?```$", "", raw)
-    cost = (resp.usage.input_tokens * 15 + resp.usage.output_tokens * 75) / 1_000_000
+    # Opus 4.5+ pricing: $5/M input, $25/M output
+    cost = (resp.usage.input_tokens * 5 + resp.usage.output_tokens * 25) / 1_000_000
     return json.loads(raw), cost
 
 
@@ -225,6 +240,19 @@ def main():
                 "user_id": acc["user_id"],
                 "error": str(e),
             }
+
+    # Never clobber a previously-good profile with an error stub — a failed
+    # account keeps its existing entry so downstream drafting isn't degraded.
+    existing = {}
+    try:
+        with open(VOICE_OUT) as f:
+            existing = json.load(f)
+    except Exception:
+        pass
+    for key, prof in list(profiles.items()):
+        if prof.get("error") and existing.get(key, {}).get("voice_summary"):
+            profiles[key] = existing[key]
+            print(f"  [preserve] kept previous good '{key}' profile (this run failed: {prof['error'][:80]})")
 
     Path(VOICE_OUT).parent.mkdir(parents=True, exist_ok=True)
     with open(VOICE_OUT, "w") as f:

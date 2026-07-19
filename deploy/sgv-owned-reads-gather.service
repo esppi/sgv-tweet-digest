@@ -18,7 +18,7 @@ Type=oneshot
 Environment=TZ=UTC
 EnvironmentFile=%h/.config/sgv-tweet-digest/env
 WorkingDirectory=%h
-ExecStart=${SYSTEM_PYTHON} ${SKILL_DIR}/scripts/gather_x.py
+ExecStart=/bin/bash -c 'exec "${SYSTEM_PYTHON:-python3}" "$SKILL_DIR/scripts/gather_x.py"'
 StandardOutput=append:%h/.local/state/sgv-tweet-digest/owned-reads-gather.log
 StandardError=append:%h/.local/state/sgv-tweet-digest/owned-reads-gather.log
 TimeoutStartSec=600
