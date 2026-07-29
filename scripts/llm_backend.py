@@ -159,7 +159,14 @@ def _openai_chat(base, api_key, model, system_text, user_text, max_tokens,
         with urllib.request.urlopen(req, timeout=timeout) as r:
             out = json.loads(r.read())
     except urllib.error.HTTPError as e:
-        raise RuntimeError(f"{model}: HTTP {e.code} {e.read().decode()[:200]}")
+        detail = e.read().decode()[:200]
+        # Some serving stacks (e.g. Aster's gpt-oss speculative decoding) reject
+        # response_format entirely — retry once without it, prompt still asks for JSON
+        if json_mode and e.code == 400 and ("grammar" in detail or "response_format" in detail):
+            return _openai_chat(base, api_key, model, system_text, user_text,
+                                max_tokens, json_mode=False,
+                                or_provider=or_provider, timeout=timeout)
+        raise RuntimeError(f"{model}: HTTP {e.code} {detail}")
     if out.get("error"):
         raise RuntimeError(f"{model}: {str(out['error'])[:200]}")
     choice = (out.get("choices") or [{}])[0]

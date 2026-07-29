@@ -103,7 +103,7 @@ def suite_voice(provider, models, report, log):
 
     for m in models:
         try:
-            text, usage, cost, dt = _call(provider, m, system, user, 1200)
+            text, usage, cost, dt = _call(provider, m, system, user, 4000)
             parsed = _parse_json(text)
             drafts = {"mist": parsed.get("mist") or [], "sgv": parsed.get("sgv") or []}
             over = [d for v in drafts.values() for d in v if len(d) > 280]
@@ -206,7 +206,7 @@ def suite_extract(provider, models, report, log):
     report["extract"] = {"models": {}}
     for m in models:
         try:
-            text, usage, cost, dt = _call(provider, m, EXTRACT_SYSTEM, user, 1600)
+            text, usage, cost, dt = _call(provider, m, EXTRACT_SYSTEM, user, 3200)
             parsed = _parse_json(text)
             moments = parsed.get("moments") or []
             blob = json.dumps(parsed).lower()
