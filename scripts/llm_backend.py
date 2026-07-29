@@ -176,6 +176,15 @@ def _openai_chat(base, api_key, model, system_text, user_text, max_tokens,
                         chunk = json.loads(data)
                     except ValueError:
                         continue
+                    if chunk.get("error"):
+                        # Streamed errors arrive as HTTP-200 data chunks
+                        err = str(chunk["error"])[:200]
+                        if json_mode and ("grammar" in err or "response_format" in err):
+                            return _openai_chat(base, api_key, model, system_text,
+                                                user_text, max_tokens, json_mode=False,
+                                                or_provider=or_provider,
+                                                timeout=timeout, stream=stream)
+                        raise RuntimeError(f"{model}: {err}")
                     if chunk.get("usage"):
                         u = chunk["usage"]
                     for ch in chunk.get("choices") or []:
