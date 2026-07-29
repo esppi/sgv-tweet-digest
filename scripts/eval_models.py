@@ -157,7 +157,7 @@ def suite_judge(provider, models, report, log, n_pos=12, n_neg=13):
             user = (f"IDEA (offered earlier):\n{case['idea']}\n\nREAL TWEET:\n{case['tweet']}"
                     "\n\nReturn the JSON, nothing else.")
             try:
-                text, usage, cost, dt = _call(provider, m, JUDGE_SYSTEM, user, 300,
+                text, usage, cost, dt = _call(provider, m, JUDGE_SYSTEM, user, 700,
                                               json_mode=True)
                 verdict = _parse_json(text)
                 cost_sum += cost
@@ -238,7 +238,7 @@ def suite_reliability(provider, models, report, log, n=5):
             try:
                 text, usage, cost, dt = _call(
                     provider, m, system,
-                    f"sum = {i}+{i * 3}; words = any three words about markets", 200,
+                    f"sum = {i}+{i * 3}; words = any three words about markets", 700,
                     json_mode=True)
                 parsed = _parse_json(text)
                 if parsed.get("ok") is True and isinstance(parsed.get("sum"), int):
