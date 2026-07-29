@@ -137,7 +137,7 @@ def _anthropic_chat(model, system_text, user_text, max_tokens,
 
 
 def _openai_chat(base, api_key, model, system_text, user_text, max_tokens,
-                 json_mode=False, or_provider=None, timeout=180):
+                 json_mode=False, or_provider=None, timeout=600):
     payload = {
         "model": model,
         "max_tokens": max_tokens,
