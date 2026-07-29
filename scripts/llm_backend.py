@@ -137,7 +137,7 @@ def _anthropic_chat(model, system_text, user_text, max_tokens,
 
 
 def _openai_chat(base, api_key, model, system_text, user_text, max_tokens,
-                 json_mode=False, or_provider=None, timeout=600):
+                 json_mode=False, or_provider=None, timeout=600, stream=False):
     payload = {
         "model": model,
         "max_tokens": max_tokens,
@@ -150,6 +150,12 @@ def _openai_chat(base, api_key, model, system_text, user_text, max_tokens,
         payload["response_format"] = {"type": "json_object"}
     if or_provider:
         payload["provider"] = or_provider
+    if stream:
+        # Streaming keeps bytes flowing from the first token, so serverless
+        # gateways (Aster 504s buffered responses at ~5 min) don't kill slow
+        # models mid-generation. urllib's timeout is per-read, not total.
+        payload["stream"] = True
+        payload["stream_options"] = {"include_usage": True}
     req = urllib.request.Request(
         base.rstrip("/") + "/chat/completions",
         data=json.dumps(payload).encode(),
@@ -157,7 +163,32 @@ def _openai_chat(base, api_key, model, system_text, user_text, max_tokens,
                  "Authorization": "Bearer " + api_key})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            out = json.loads(r.read())
+            if stream:
+                parts, finish, u = [], None, {}
+                for raw_line in r:
+                    line = raw_line.decode("utf-8", "replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                    except ValueError:
+                        continue
+                    if chunk.get("usage"):
+                        u = chunk["usage"]
+                    for ch in chunk.get("choices") or []:
+                        if ch.get("finish_reason"):
+                            finish = ch["finish_reason"]
+                        delta = (ch.get("delta") or {}).get("content")
+                        if delta:
+                            parts.append(delta)
+                out = {"choices": [{"finish_reason": finish,
+                                    "message": {"content": "".join(parts)}}],
+                       "usage": u}
+            else:
+                out = json.loads(r.read())
     except urllib.error.HTTPError as e:
         detail = e.read().decode()[:200]
         # Some serving stacks (e.g. Aster's gpt-oss speculative decoding) reject
@@ -165,7 +196,7 @@ def _openai_chat(base, api_key, model, system_text, user_text, max_tokens,
         if json_mode and e.code == 400 and ("grammar" in detail or "response_format" in detail):
             return _openai_chat(base, api_key, model, system_text, user_text,
                                 max_tokens, json_mode=False,
-                                or_provider=or_provider, timeout=timeout)
+                                or_provider=or_provider, timeout=timeout, stream=stream)
         raise RuntimeError(f"{model}: HTTP {e.code} {detail}")
     if out.get("error"):
         raise RuntimeError(f"{model}: {str(out['error'])[:200]}")
@@ -176,6 +207,11 @@ def _openai_chat(base, api_key, model, system_text, user_text, max_tokens,
     # Reasoning models sometimes leak thinking blocks into content
     text = _THINK_RE.sub("", text).strip()
     u = out.get("usage") or {}
+    if not u:
+        # Stream ended without a usage chunk — rough chars/4 estimate so cost
+        # logs stay populated rather than silently reading $0
+        u = {"prompt_tokens": (len(system_text) + len(user_text)) // 4,
+             "completion_tokens": len(text) // 4}
     cached = ((u.get("prompt_tokens_details") or {}).get("cached_tokens")
               or u.get("cached_tokens") or 0)
     usage = {
@@ -216,7 +252,7 @@ def chat(stage, system_text, user_text, max_tokens, default_model):
             raise RuntimeError("ASTER_API_KEY not set")
         text, usage = _openai_chat(
             ASTER_BASE, key, model, system_text, user_text, max_tokens,
-            json_mode=json_mode)
+            json_mode=json_mode, stream=True)
     else:
         raise RuntimeError(f"unknown provider '{provider}' for stage '{stage}'")
 
