@@ -137,7 +137,8 @@ def _anthropic_chat(model, system_text, user_text, max_tokens,
 
 
 def _openai_chat(base, api_key, model, system_text, user_text, max_tokens,
-                 json_mode=False, or_provider=None, timeout=600, stream=False):
+                 json_mode=False, or_provider=None, timeout=600, stream=False,
+                 nothink=False):
     payload = {
         "model": model,
         "max_tokens": max_tokens,
@@ -150,6 +151,11 @@ def _openai_chat(base, api_key, model, system_text, user_text, max_tokens,
         payload["response_format"] = {"type": "json_object"}
     if or_provider:
         payload["provider"] = or_provider
+    if nothink:
+        # vLLM-style thinking toggle (verified on Aster GLM: 8x fewer output
+        # tokens). Reasoning burn otherwise exceeds Aster's ~300s gateway
+        # wall on large calls.
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
     if stream:
         # Streaming keeps bytes flowing from the first token, so serverless
         # gateways (Aster 504s buffered responses at ~5 min) don't kill slow
@@ -183,7 +189,8 @@ def _openai_chat(base, api_key, model, system_text, user_text, max_tokens,
                             return _openai_chat(base, api_key, model, system_text,
                                                 user_text, max_tokens, json_mode=False,
                                                 or_provider=or_provider,
-                                                timeout=timeout, stream=stream)
+                                                timeout=timeout, stream=stream,
+                                                nothink=nothink)
                         raise RuntimeError(f"{model}: {err}")
                     if chunk.get("usage"):
                         u = chunk["usage"]
@@ -205,7 +212,8 @@ def _openai_chat(base, api_key, model, system_text, user_text, max_tokens,
         if json_mode and e.code == 400 and ("grammar" in detail or "response_format" in detail):
             return _openai_chat(base, api_key, model, system_text, user_text,
                                 max_tokens, json_mode=False,
-                                or_provider=or_provider, timeout=timeout, stream=stream)
+                                or_provider=or_provider, timeout=timeout,
+                                stream=stream, nothink=nothink)
         raise RuntimeError(f"{model}: HTTP {e.code} {detail}")
     if out.get("error"):
         raise RuntimeError(f"{model}: {str(out['error'])[:200]}")
@@ -261,7 +269,7 @@ def chat(stage, system_text, user_text, max_tokens, default_model):
             raise RuntimeError("ASTER_API_KEY not set")
         text, usage = _openai_chat(
             ASTER_BASE, key, model, system_text, user_text, max_tokens,
-            json_mode=json_mode, stream=True)
+            json_mode=json_mode, stream=True, nothink=bool(b.get("nothink")))
     else:
         raise RuntimeError(f"unknown provider '{provider}' for stage '{stage}'")
 
