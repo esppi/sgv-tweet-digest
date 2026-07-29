@@ -794,13 +794,14 @@ def opus_pick(candidates, shoal_news):
         )
     user_msg += "Return the structured JSON as specified. No preamble, no explanation, JSON only."
 
-    # 10000 max_tokens: the JSON alone is ~3.6k and reasoning models (K3/GLM)
-    # burn thinking tokens from the same budget — GLM truncated at 6000.
+    # 20000 max_tokens: the JSON alone is ~3.6k and reasoning models (K3/GLM)
+    # burn thinking tokens from the same budget — GLM truncated at 10000 on
+    # this prompt. Only generated tokens are billed; Opus is unaffected.
     raw, usage, cost = llm_backend.chat(
         stage="opus_pick",
         system_text=SYSTEM_PROMPT,
         user_text=user_msg,
-        max_tokens=10000,
+        max_tokens=20000,
         default_model=OPUS_MODEL,
     )
     # Parse JSON (tolerate code fences + trailing prose)
