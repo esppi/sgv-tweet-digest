@@ -210,7 +210,7 @@ def _sonnet_draft(system_prompt, content_row):
     import llm_backend
     raw, usage, cost = llm_backend.chat(
         stage="good_content", system_text=system_prompt, user_text=user_msg,
-        max_tokens=1600, default_model=SONNET_MODEL)
+        max_tokens=3000, default_model=SONNET_MODEL)
     if raw.startswith("```"):
         raw = re.sub(r"^```(?:json)?\n?|\n?```$", "", raw)
     start = raw.find("{")
