@@ -1,59 +1,74 @@
 {
-  "_comment": "Non-secret operational config for sgv-tweet-digest. Copy this file to your real config (e.g. ~/.config/sgv-tweet-digest/config.json) and fill in YOUR values. Secrets do NOT belong here; they live in your .env (see .env.example). Your real config copy is gitignored.",
-
-  "_accounts_comment": "The two X accounts you draft for. personal = the 'mist' voice (your handle); sgv = the 'sgv' fund voice. Resolve numeric user ids at e.g. https://tweeterid.com or via the X API users/by/username endpoint.",
-  "personal_user_id": "YOUR_PERSONAL_X_USER_ID",
-  "personal_username": "YOUR_PERSONAL_X_HANDLE",
-  "sgv_user_id": "YOUR_FUND_X_USER_ID",
-  "sgv_username": "YOUR_FUND_X_HANDLE",
-
-  "_followed_list_ids_comment": "X Lists whose tweets Stage A gathers (read via OAuth2 user token against YOUR @handle). Each entry: numeric list id + a human label + the list owner's handle. Optional per-entry fields: 'category' ('crypto' default | 'ai' | 'tech' | 'vc' — non-crypto categories feed the HOT QTs lane instead of the crypto core); 'max_tweets' (fetch depth, default 10 — flow-tune it: ~10 for slow curated lists, ~30 for fast ones so the daily pull covers more than a few minutes); 'author_allowlist' (array of @handles — noise gate for firehose lists). ORDER MATTERS: the daily cost cap skips lists in config order, so put your core crypto lists FIRST. A List id is the number in https://x.com/i/lists/<id>.",
-  "followed_list_ids": [
-    {
-      "id": "0000000000000000001",
-      "name": "Example Crypto VC List",
-      "owner": "example_list_owner",
-      "max_tweets": 10
-    },
-    {
-      "id": "0000000000000000002",
-      "name": "Example Fast Crypto List",
-      "owner": "another_list_owner",
-      "max_tweets": 30,
-      "author_allowlist": []
-    },
-    {
-      "id": "0000000000000000003",
-      "name": "Example AI List",
-      "owner": "ai_list_owner",
-      "category": "ai",
-      "max_tweets": 30
-    },
-    {
-      "id": "0000000000000000004",
-      "name": "Example VC List",
-      "owner": "vc_list_owner",
-      "category": "vc",
-      "max_tweets": 10
-    }
-  ],
-
-  "_membership_allowlist_comment": "Optional name-substring allowlist used when snapshotting which Lists you belong to. Leave empty [] to include all, or list label fragments to keep only matching Lists.",
-  "membership_allowlist": [
-    "Example Topic A",
-    "Example Topic B"
-  ],
-
-  "_models_comment": "Anthropic model ids the pipeline calls. Opus does the high-stakes scoring + draft selection; Sonnet does the insights pass, good-content drafting, idea matching, and feedback profile. Override here if you want different model versions; the ANTHROPIC_API_KEY itself lives in .env.",
-  "models": {
-    "opus": "claude-opus-4-7",
-    "sonnet": "claude-sonnet-4-5"
+ "_comment": "Non-secret operational config for sgv-tweet-digest. Copy this file to your real config (e.g. ~/.config/sgv-tweet-digest/config.json) and fill in YOUR values. Secrets do NOT belong here; they live in your .env (see .env.example). Your real config copy is gitignored.",
+ "_accounts_comment": "The two X accounts you draft for. personal = the 'mist' voice (your handle); sgv = the 'sgv' fund voice. Resolve numeric user ids at e.g. https://tweeterid.com or via the X API users/by/username endpoint.",
+ "personal_user_id": "YOUR_PERSONAL_X_USER_ID",
+ "personal_username": "YOUR_PERSONAL_X_HANDLE",
+ "sgv_user_id": "YOUR_FUND_X_USER_ID",
+ "sgv_username": "YOUR_FUND_X_HANDLE",
+ "_followed_list_ids_comment": "X Lists whose tweets Stage A gathers (read via OAuth2 user token against YOUR @handle). Each entry: numeric list id + a human label + the list owner's handle. Optional per-entry fields: 'category' ('crypto' default | 'ai' | 'tech' | 'vc' — non-crypto categories feed the HOT QTs lane instead of the crypto core); 'max_tweets' (fetch depth, default 10 — flow-tune it: ~10 for slow curated lists, ~30 for fast ones so the daily pull covers more than a few minutes); 'author_allowlist' (array of @handles — noise gate for firehose lists). ORDER MATTERS: the daily cost cap skips lists in config order, so put your core crypto lists FIRST. A List id is the number in https://x.com/i/lists/<id>.",
+ "followed_list_ids": [
+  {
+   "id": "0000000000000000001",
+   "name": "Example Crypto VC List",
+   "owner": "example_list_owner",
+   "max_tweets": 10
   },
-
-  "_budget_comment": "Cost guardrail: the hard ceiling gather_x.py enforces on paid X API spend per day (calls that would push past it are skipped, config-order).",
-  "daily_x_cost_cap_usd": 1.0,
-
-  "_scoring_comment": "Heuristic scoring knobs (digest.py). candidate_count = how many top-scoring candidates to hand to Opus for the final pick. score_threshold = optional minimum 0-18 heuristic score for the candidate pool (softly enforced: skipped for the run if it would leave fewer than top_n tweets; set 0 to disable).",
-  "score_threshold": 8,
-  "candidate_count": 30
+  {
+   "id": "0000000000000000002",
+   "name": "Example Fast Crypto List",
+   "owner": "another_list_owner",
+   "max_tweets": 30,
+   "author_allowlist": []
+  },
+  {
+   "id": "0000000000000000003",
+   "name": "Example AI List",
+   "owner": "ai_list_owner",
+   "category": "ai",
+   "max_tweets": 30
+  },
+  {
+   "id": "0000000000000000004",
+   "name": "Example VC List",
+   "owner": "vc_list_owner",
+   "category": "vc",
+   "max_tweets": 10
+  }
+ ],
+ "_membership_allowlist_comment": "Optional name-substring allowlist used when snapshotting which Lists you belong to. Leave empty [] to include all, or list label fragments to keep only matching Lists.",
+ "membership_allowlist": [
+  "Example Topic A",
+  "Example Topic B"
+ ],
+ "_models_comment": "Anthropic model ids the pipeline calls. Opus does the high-stakes scoring + draft selection; Sonnet does the insights pass, good-content drafting, idea matching, and feedback profile. Override here if you want different model versions; the ANTHROPIC_API_KEY itself lives in .env.",
+ "models": {
+  "opus": "claude-opus-4-7",
+  "sonnet": "claude-sonnet-4-5"
+ },
+ "_backends_comment": "Optional per-stage LLM routing (scripts/llm_backend.py). Omit entirely to use direct Anthropic with the 'models' ids above. Each stage maps to {provider: anthropic|openrouter|aster, model, json_mode?, nothink?, or_provider?}. Stages: opus_pick, insights, call_extract, call_draft, idea_matcher, feedback_profile, good_content, voice_profiles; 'default' catches the rest. 'nothink' disables reasoning-model thinking (vLLM chat_template_kwargs) — needed on big calls behind slow gateways. 'json_mode' requests response_format json_object (auto-retries without it where unsupported). Aster/OpenRouter keys live in .env (ASTER_API_KEY / OPENROUTER_API_KEY).",
+ "_backends_example": {
+  "default": {
+   "provider": "aster",
+   "model": "glm-5.2"
+  },
+  "opus_pick": {
+   "provider": "aster",
+   "model": "glm-5.2",
+   "nothink": true
+  },
+  "call_draft": {
+   "provider": "aster",
+   "model": "kimi-k3"
+  },
+  "idea_matcher": {
+   "provider": "aster",
+   "model": "glm-5.2",
+   "json_mode": true
+  }
+ },
+ "_budget_comment": "Cost guardrail: the hard ceiling gather_x.py enforces on paid X API spend per day (calls that would push past it are skipped, config-order).",
+ "daily_x_cost_cap_usd": 1.0,
+ "_scoring_comment": "Heuristic scoring knobs (digest.py). candidate_count = how many top-scoring candidates to hand to Opus for the final pick. score_threshold = optional minimum 0-18 heuristic score for the candidate pool (softly enforced: skipped for the run if it would leave fewer than top_n tweets; set 0 to disable).",
+ "score_threshold": 8,
+ "candidate_count": 30
 }

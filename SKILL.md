@@ -1,6 +1,6 @@
 ---
 name: sgv-tweet-digest
-version: 0.3.0
+version: 0.4.0
 description: >-
   Drafts a daily dual-voice crypto-Twitter digest from your X follow-graph and
   curated Lists: scores candidate tweets with a metrics-first 0-18 rubric, picks
