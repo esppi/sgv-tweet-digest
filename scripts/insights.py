@@ -827,7 +827,7 @@ def sonnet_distill(payload, memory_lines=None):
         stage="insights",
         system_text=system_prompt,
         user_text=user_msg,
-        max_tokens=2600,  # headroom for reasoning-model thinking burn
+        max_tokens=6000,  # GLM's thinking burn truncated at 2600 on real runs
         default_model=SONNET_MODEL,
     )
     if raw.startswith("```"):

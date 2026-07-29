@@ -241,11 +241,11 @@ def run(dry_run=False, verbose=True):
                 log(f"  [calls] call {n}: transcript too thin, skipping")
                 processed.append(cid)
                 continue
-            # Stage 1 — anonymized extraction (2000: dense hour-long calls plus
+            # Stage 1 — anonymized extraction (5000: dense hour-long calls plus
             # reasoning-model thinking burn — truncation aborts the whole call)
             ex, c1 = _sonnet("call_extract", EXTRACT_SYSTEM,
                              f"CALL TRANSCRIPT ({dur:.0f} min):\n{text}\n\nReturn the JSON.",
-                             max_tokens=2000)
+                             max_tokens=5000)
             total_cost += c1
             moments = [m for m in (ex.get("moments") or []) if isinstance(m, dict)][:10]
             if not moments:
@@ -261,7 +261,7 @@ def run(dry_run=False, verbose=True):
                 user2 += ("DO-NOT-REPEAT (recent drafts):\n"
                           + "\n".join("  - " + b for b in burned) + "\n\n")
             user2 += "Return the JSON."
-            dr, c2 = _sonnet("call_draft", draft_sys, user2, max_tokens=1400)
+            dr, c2 = _sonnet("call_draft", draft_sys, user2, max_tokens=3000)
             total_cost += c2
             drafts = []
             for d in (dr.get("drafts") or [])[:DRAFTS_PER_CALL]:
