@@ -50,30 +50,25 @@ mk = lambda age_h: {"metrics": {"like_count": 120, "retweet_count": 30, "reply_c
 sf, ss = digest.heuristic_score(mk(0.75)), digest.heuristic_score(mk(30))
 assert sf > ss, f"velocity not rewarded: fresh={sf} stale={ss}"
 
-# ── memory: empty DB -> [], and lines reach the Opus user message ──
+# ── memory: empty DB -> [], and lines reach the pick-call user message ──
 assert digest._load_idea_memory() == []
 captured = {}
-class FakeMsg:
-    def __init__(self):
-        self.content = [types.SimpleNamespace(type="text", text=json.dumps({
-            "picks": [], "sgv_shoal_picks": [], "mist_shoal_picks": [],
-            "sgv_ideas": [], "mist_ideas": [], "hot_qt_picks": []}))]
-        self.usage = types.SimpleNamespace(input_tokens=1, output_tokens=1,
-            cache_creation_input_tokens=0, cache_read_input_tokens=0)
-        self.stop_reason = "end_turn"
-class FakeClient:
-    class messages:
-        @staticmethod
-        def create(**kw):
-            captured["user_msg"] = kw["messages"][0]["content"]
-            return FakeMsg()
-digest.anthropic = types.SimpleNamespace(Anthropic=lambda api_key: FakeClient())
+import llm_backend
+def fake_chat(stage, system_text, user_text, max_tokens, default_model):
+    captured["user_msg"] = user_text
+    return (json.dumps({"picks": [], "sgv_shoal_picks": [], "mist_shoal_picks": [],
+                        "sgv_ideas": [], "mist_ideas": [], "hot_qt_picks": []}),
+            {"input_tokens": 1, "output_tokens": 1,
+             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}, 0.0)
+_real_chat = llm_backend.chat
+llm_backend.chat = fake_chat
 _real_mem = digest._load_idea_memory
 digest._load_idea_memory = lambda days=7, cap=40: ["[2026-07-14 mist] topic=jito | draft: test take"]
 digest.opus_pick([{"tweet_id": "1", "account": "@a", "text": "t", "metrics": {}, "_heuristic_score": 5,
                    "_thesis_label": "general", "category": "crypto"}], [])
 assert "DO NOT REPEAT" in captured["user_msg"] and "jito" in captured["user_msg"]
 digest._load_idea_memory = _real_mem
+llm_backend.chat = _real_chat
 
 # ── stubbed end-to-end dry-run ──
 IDEA = lambda v: {"kind": "tweet", "source": "News", "setup": "s", "draft": f"test {v} draft.",

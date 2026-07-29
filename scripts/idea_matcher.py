@@ -172,7 +172,9 @@ Confidence meanings:
   low     — tangential overlap only (return match: false in this case)"""
 
 
-def sonnet_judge(client, idea, our_tweet, days_diff):
+def sonnet_judge(idea, our_tweet, days_diff):
+    """One judge verdict (provider/model per config 'backends.idea_matcher')."""
+    import llm_backend
     user_msg = (
         f"IDEA (offered {days_diff} days ago, voice={idea['voice']}, topic={idea.get('topic') or 'n/a'}):\n"
         f"{idea['draft']}\n\n"
@@ -180,32 +182,15 @@ def sonnet_judge(client, idea, our_tweet, days_diff):
         f"{our_tweet['text']}\n\n"
         "Return the JSON, nothing else."
     )
-    resp = client.messages.create(
-        model=_sonnet_model(),
-        max_tokens=300,
-        system=[{"type": "text", "text": JUDGE_SYSTEM, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": user_msg}],
-    )
-    if getattr(resp, "stop_reason", None) == "max_tokens":
-        raise RuntimeError("judge output truncated at max_tokens")
-    # First TEXT block (newer models may emit a thinking block at content[0])
-    raw = next((b.text for b in resp.content if getattr(b, "type", "") == "text"), "").strip()
+    raw, usage, cost = llm_backend.chat(
+        stage="idea_matcher", system_text=JUDGE_SYSTEM, user_text=user_msg,
+        max_tokens=700, default_model=_sonnet_model())
     if raw.startswith("```"):
         raw = re.sub(r"^```(?:json)?\n?|\n?```$", "", raw)
-    parsed = json.loads(raw)
-    usage = {
-        "input_tokens": resp.usage.input_tokens,
-        "output_tokens": resp.usage.output_tokens,
-        "cache_creation_input_tokens": getattr(resp.usage, "cache_creation_input_tokens", 0),
-        "cache_read_input_tokens": getattr(resp.usage, "cache_read_input_tokens", 0),
-    }
-    # Sonnet pricing: $3/M input, $15/M output, $3.75/M cache write, $0.30/M cache read
-    cost = (
-        usage["input_tokens"] * 3 / 1_000_000
-        + usage["output_tokens"] * 15 / 1_000_000
-        + usage["cache_creation_input_tokens"] * 3.75 / 1_000_000
-        + usage["cache_read_input_tokens"] * 0.30 / 1_000_000
-    )
+    start = raw.find("{")
+    if start < 0:
+        raise RuntimeError("judge: no JSON object in model output")
+    parsed, _ = json.JSONDecoder().raw_decode(raw[start:])
     return parsed, cost
 
 
@@ -234,9 +219,6 @@ def run(lookback_hours=LOOKBACK_TWEET_HOURS, max_pairs=MAX_JUDGE_PAIRS_PER_RUN, 
     if not tweets:
         return {"tweets_examined": 0, "judge_calls": 0, "matches_saved": 0,
                 "cost_usd": 0.0, "duration_s": 0}
-
-    # Anthropic client (lazy — only created when a pair survives the prefilter)
-    client = None
 
     judge_calls = 0
     matches_saved = 0
@@ -279,18 +261,12 @@ def run(lookback_hours=LOOKBACK_TWEET_HOURS, max_pairs=MAX_JUDGE_PAIRS_PER_RUN, 
             if judge_calls >= max_pairs:
                 log(f"  reached max judge pairs ({max_pairs}), stopping")
                 break
-            if client is None:
-                import anthropic
-                api_key = os.environ.get("ANTHROPIC_API_KEY")
-                if not api_key:
-                    raise SystemExit("ANTHROPIC_API_KEY not set in environment")
-                client = anthropic.Anthropic(api_key=api_key)
 
             try:
                 tweet_dt = datetime.datetime.fromisoformat(tweet["created_at"].replace("Z", "+00:00"))
                 idea_dt = datetime.datetime.fromisoformat(idea["generated_at"])
                 days_diff = max(0, (tweet_dt - idea_dt).days)
-                verdict, call_cost = sonnet_judge(client, idea, tweet, days_diff)
+                verdict, call_cost = sonnet_judge(idea, tweet, days_diff)
             except Exception as e:
                 log(f"    sonnet judge error: {e}")
                 continue

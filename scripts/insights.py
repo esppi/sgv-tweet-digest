@@ -787,16 +787,11 @@ dominance (first = primary_hook). Canonical vocabulary (use ONLY these values):
 
 
 def sonnet_distill(payload, memory_lines=None):
-    """Call Sonnet with the anonymized payload, return parsed insights.
+    """The insights distill call (provider/model per config 'backends.insights').
 
     memory_lines: recent-run DO-NOT-REPEAT lines — injected into the USER message
     (not the system prompt: that is cache_control'd and must stay static)."""
-    import anthropic
-
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise SystemExit("ANTHROPIC_API_KEY not set in environment")
-    client = anthropic.Anthropic(api_key=api_key)
+    import llm_backend
 
     system_prompt = _build_system_prompt()
     # Annotate each source with an idx field so Sonnet can attribute insights back
@@ -828,38 +823,19 @@ def sonnet_distill(payload, memory_lines=None):
         )
     user_msg += "Return the JSON, nothing else."
 
-    resp = client.messages.create(
-        model=SONNET_MODEL,
-        max_tokens=2000,
-        system=[{
-            "type": "text",
-            "text": system_prompt,
-            "cache_control": {"type": "ephemeral"},
-        }],
-        messages=[{"role": "user", "content": user_msg}],
+    raw, usage, cost = llm_backend.chat(
+        stage="insights",
+        system_text=system_prompt,
+        user_text=user_msg,
+        max_tokens=2600,  # headroom for reasoning-model thinking burn
+        default_model=SONNET_MODEL,
     )
-
-    if getattr(resp, "stop_reason", None) == "max_tokens":
-        raise RuntimeError("Sonnet output truncated at max_tokens — JSON would be invalid")
-    # First TEXT block (newer models may emit a thinking block at content[0])
-    raw = next((b.text for b in resp.content if getattr(b, "type", "") == "text"), "").strip()
     if raw.startswith("```"):
         raw = re.sub(r"^```(?:json)?\n?|\n?```$", "", raw)
-    parsed = json.loads(raw)
-
-    usage = {
-        "input_tokens": resp.usage.input_tokens,
-        "output_tokens": resp.usage.output_tokens,
-        "cache_creation_input_tokens": getattr(resp.usage, "cache_creation_input_tokens", 0),
-        "cache_read_input_tokens": getattr(resp.usage, "cache_read_input_tokens", 0),
-    }
-    # Sonnet pricing: $3/M input, $15/M output, $3.75/M cache write, $0.30/M cache read
-    cost = (
-        usage["input_tokens"] * 3 / 1_000_000
-        + usage["output_tokens"] * 15 / 1_000_000
-        + usage["cache_creation_input_tokens"] * 3.75 / 1_000_000
-        + usage["cache_read_input_tokens"] * 0.30 / 1_000_000
-    )
+    start = raw.find("{")
+    if start < 0:
+        raise RuntimeError("insights: no JSON object in model output")
+    parsed, _ = json.JSONDecoder().raw_decode(raw[start:])
     return parsed, usage, cost
 
 

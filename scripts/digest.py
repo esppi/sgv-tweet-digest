@@ -743,11 +743,9 @@ def _load_idea_memory(days=7, cap=40):
 
 
 def opus_pick(candidates, shoal_news):
-    """Call Claude Opus with pre-filtered candidates + news. Returns parsed JSON."""
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise SystemExit("ANTHROPIC_API_KEY not set in environment")
-    client = anthropic.Anthropic(api_key=api_key)
+    """The main pick+draft call (provider/model per config 'backends.opus_pick';
+    defaults to direct Anthropic + OPUS_MODEL). Returns parsed JSON."""
+    import llm_backend
 
     # Compact the candidates (strip noisy fields)
     compact = []
@@ -796,41 +794,22 @@ def opus_pick(candidates, shoal_news):
         )
     user_msg += "Return the structured JSON as specified. No preamble, no explanation, JSON only."
 
-    resp = client.messages.create(
-        model=OPUS_MODEL,
-        # 5000 (was 4000): the hot_qt_picks section adds ~6 drafts of output; a
-        # verbose day at 4000 would truncate -> RuntimeError -> whole digest aborts.
-        max_tokens=5000,
-        system=[{
-            "type": "text",
-            "text": SYSTEM_PROMPT,
-            "cache_control": {"type": "ephemeral"},
-        }],
-        messages=[{"role": "user", "content": user_msg}],
+    # 6000 max_tokens: hot_qt_picks adds ~6 drafts, and reasoning models
+    # (K3/GLM) burn hidden thinking tokens — truncation aborts the digest.
+    raw, usage, cost = llm_backend.chat(
+        stage="opus_pick",
+        system_text=SYSTEM_PROMPT,
+        user_text=user_msg,
+        max_tokens=6000,
+        default_model=OPUS_MODEL,
     )
-
-    if getattr(resp, "stop_reason", None) == "max_tokens":
-        raise RuntimeError("Opus output truncated at max_tokens — JSON would be invalid")
-    # First TEXT block (newer models may emit a thinking block at content[0])
-    raw = next((b.text for b in resp.content if getattr(b, "type", "") == "text"), "").strip()
-    # Parse JSON (tolerate code fences)
+    # Parse JSON (tolerate code fences + trailing prose)
     if raw.startswith("```"):
         raw = re.sub(r"^```(?:json)?\n?|\n?```$", "", raw)
-    parsed = json.loads(raw)
-
-    usage = {
-        "input_tokens": resp.usage.input_tokens,
-        "output_tokens": resp.usage.output_tokens,
-        "cache_creation_input_tokens": getattr(resp.usage, "cache_creation_input_tokens", 0),
-        "cache_read_input_tokens": getattr(resp.usage, "cache_read_input_tokens", 0),
-    }
-    # Opus 4.5+ pricing: $5/M in, $25/M out, 1.25× in for cache write, 0.1× for cache read
-    cost = (
-        usage["input_tokens"] * 5 / 1_000_000 +
-        usage["output_tokens"] * 25 / 1_000_000 +
-        usage["cache_creation_input_tokens"] * 6.25 / 1_000_000 +
-        usage["cache_read_input_tokens"] * 0.5 / 1_000_000
-    )
+    start = raw.find("{")
+    if start < 0:
+        raise RuntimeError("opus_pick: no JSON object in model output")
+    parsed, _ = json.JSONDecoder().raw_decode(raw[start:])
     return parsed, usage, cost
 
 

@@ -188,8 +188,9 @@ OUTPUT FORMAT (strict JSON, nothing else):
   - "no_hook"          → none of the above (use sparingly)"""
 
 
-def _sonnet_draft(client, system_prompt, content_row):
-    """One Sonnet call for one good_content item."""
+def _sonnet_draft(system_prompt, content_row):
+    """One LLM call for one good_content item (provider/model per config
+    'backends.good_content')."""
     text = (content_row.get("full_text") or "")[:MAX_TEXT_CHARS]
     title = content_row.get("title") or "(no title)"
     author = content_row.get("author") or "(unknown)"
@@ -206,34 +207,16 @@ def _sonnet_draft(client, system_prompt, content_row):
         + f"\nBODY:\n{text}\n\nReturn the JSON, nothing else."
     )
 
-    resp = client.messages.create(
-        model=SONNET_MODEL,
-        max_tokens=1200,
-        system=[{
-            "type": "text",
-            "text": system_prompt,
-            "cache_control": {"type": "ephemeral"},
-        }],
-        messages=[{"role": "user", "content": user_msg}],
-    )
-
-    raw = resp.content[0].text.strip()
+    import llm_backend
+    raw, usage, cost = llm_backend.chat(
+        stage="good_content", system_text=system_prompt, user_text=user_msg,
+        max_tokens=1600, default_model=SONNET_MODEL)
     if raw.startswith("```"):
         raw = re.sub(r"^```(?:json)?\n?|\n?```$", "", raw)
-    parsed = json.loads(raw)
-
-    usage = {
-        "input_tokens": resp.usage.input_tokens,
-        "output_tokens": resp.usage.output_tokens,
-        "cache_creation_input_tokens": getattr(resp.usage, "cache_creation_input_tokens", 0),
-        "cache_read_input_tokens": getattr(resp.usage, "cache_read_input_tokens", 0),
-    }
-    cost = (
-        usage["input_tokens"] * 3 / 1_000_000
-        + usage["output_tokens"] * 15 / 1_000_000
-        + usage["cache_creation_input_tokens"] * 3.75 / 1_000_000
-        + usage["cache_read_input_tokens"] * 0.30 / 1_000_000
-    )
+    start = raw.find("{")
+    if start < 0:
+        raise RuntimeError("good_content: no JSON object in model output")
+    parsed, _ = json.JSONDecoder().raw_decode(raw[start:])
     return parsed, usage, cost
 
 
@@ -290,13 +273,6 @@ def run(limit=DEFAULT_LIMIT, verbose=True):
         log("  no good_content rows in library (need at least 1 ingested URL)")
         return {"drafted": 0, "resurfaced": 0, "failed": 0, "cost_usd": 0, "duration_s": 0}
 
-    # Anthropic client
-    import anthropic
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise SystemExit("ANTHROPIC_API_KEY not set in environment")
-    client = anthropic.Anthropic(api_key=api_key)
-
     system_prompt = _build_system_prompt()
 
     drafted = 0       # net-new items
@@ -308,7 +284,7 @@ def run(limit=DEFAULT_LIMIT, verbose=True):
         kind_tag = "NEW" if row["is_new"] else "RESURFACE"
         log(f"  gc#{row['id']} ({kind_tag}) ({row.get('source_kind', '?')}) {(row.get('title') or row['url'])[:60]}")
         try:
-            parsed, usage, cost = _sonnet_draft(client, system_prompt, row)
+            parsed, usage, cost = _sonnet_draft(system_prompt, row)
         except Exception as e:
             log(f"    -> FAILED: {e}")
             if row["is_new"]:

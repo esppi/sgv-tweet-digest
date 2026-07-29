@@ -150,12 +150,9 @@ def filter_substantive(tweets):
 
 
 def characterize_voice(account_label, samples):
-    """Call Opus once to write a tight voice profile."""
-    import anthropic
-    key = os.environ.get("ANTHROPIC_API_KEY")
-    if not key:
-        raise SystemExit("ANTHROPIC_API_KEY not set in environment")
-    client = anthropic.Anthropic(api_key=key)
+    """One LLM call to write a tight voice profile (provider/model per config
+    'backends.voice_profiles')."""
+    import llm_backend
 
     sample_block = "\n\n".join(f"[{i+1}] {s['text']}" for i, s in enumerate(samples[:15]))
 
@@ -174,19 +171,18 @@ Output ONLY valid JSON, no preamble:
 
 Be precise and useful — these will be used as few-shot context to write tweets in this voice."""
 
-    resp = client.messages.create(
-        model=OPUS_MODEL,
-        max_tokens=2000,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    # First TEXT block (newer models may emit a thinking block at content[0])
-    raw = next((b.text for b in resp.content if getattr(b, "type", "") == "text"), "").strip()
+    raw, usage, cost = llm_backend.chat(
+        stage="voice_profiles",
+        system_text="You write precise voice profiles from tweet samples.",
+        user_text=prompt, max_tokens=2400, default_model=OPUS_MODEL)
     if raw.startswith("```"):
         import re
         raw = re.sub(r"^```(?:json)?\n?|\n?```$", "", raw)
-    # Opus 4.5+ pricing: $5/M input, $25/M output
-    cost = (resp.usage.input_tokens * 5 + resp.usage.output_tokens * 25) / 1_000_000
-    return json.loads(raw), cost
+    start = raw.find("{")
+    if start < 0:
+        raise RuntimeError("voice_profiles: no JSON object in model output")
+    parsed, _ = json.JSONDecoder().raw_decode(raw[start:])
+    return parsed, cost
 
 
 def main():

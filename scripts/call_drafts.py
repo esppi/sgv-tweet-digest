@@ -180,20 +180,15 @@ def _burned_lines(days=5, cap=25):
 # ─────────────────────────────────────────
 # SONNET CALLS
 # ─────────────────────────────────────────
-def _sonnet(client, system, user_msg, max_tokens):
-    resp = client.messages.create(
-        model=_sonnet_model(), max_tokens=max_tokens,
-        system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": user_msg}])
-    if getattr(resp, "stop_reason", None) == "max_tokens":
-        raise RuntimeError("truncated at max_tokens")
-    raw = next((b.text for b in resp.content if getattr(b, "type", "") == "text"), "").strip()
+def _sonnet(stage, system, user_msg, max_tokens):
+    """One LLM call for `stage` ('call_extract' or 'call_draft' — provider/model
+    per config 'backends')."""
+    import llm_backend
+    raw, usage, cost = llm_backend.chat(
+        stage=stage, system_text=system, user_text=user_msg,
+        max_tokens=max_tokens, default_model=_sonnet_model())
     if raw.startswith("```"):
         raw = re.sub(r"^```(?:json)?\n?|\n?```$", "", raw)
-    u = resp.usage
-    cost = (u.input_tokens * 3 + u.output_tokens * 15
-            + getattr(u, "cache_creation_input_tokens", 0) * 3.75
-            + getattr(u, "cache_read_input_tokens", 0) * 0.30) / 1_000_000
     # Tolerant parse: models sometimes append prose after the JSON object
     # ("Extra data" on strict loads) — take the FIRST valid object.
     start = raw.find("{")
@@ -233,12 +228,6 @@ def run(dry_run=False, verbose=True):
     if not todo:
         return empty
 
-    import anthropic
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        return {**empty, "errors": ["ANTHROPIC_API_KEY not set"]}
-    client = anthropic.Anthropic(api_key=api_key)
-
     burned = _burned_lines()
     draft_sys = _draft_system()
     results, total_cost, errors, processed = [], 0.0, [], []
@@ -252,11 +241,11 @@ def run(dry_run=False, verbose=True):
                 log(f"  [calls] call {n}: transcript too thin, skipping")
                 processed.append(cid)
                 continue
-            # Stage 1 — anonymized extraction (1600: dense hour-long calls
-            # overflowed 1000 — truncation aborts the whole call)
-            ex, c1 = _sonnet(client, EXTRACT_SYSTEM,
+            # Stage 1 — anonymized extraction (2000: dense hour-long calls plus
+            # reasoning-model thinking burn — truncation aborts the whole call)
+            ex, c1 = _sonnet("call_extract", EXTRACT_SYSTEM,
                              f"CALL TRANSCRIPT ({dur:.0f} min):\n{text}\n\nReturn the JSON.",
-                             max_tokens=1600)
+                             max_tokens=2000)
             total_cost += c1
             moments = [m for m in (ex.get("moments") or []) if isinstance(m, dict)][:10]
             if not moments:
@@ -272,7 +261,7 @@ def run(dry_run=False, verbose=True):
                 user2 += ("DO-NOT-REPEAT (recent drafts):\n"
                           + "\n".join("  - " + b for b in burned) + "\n\n")
             user2 += "Return the JSON."
-            dr, c2 = _sonnet(client, draft_sys, user2, max_tokens=1100)
+            dr, c2 = _sonnet("call_draft", draft_sys, user2, max_tokens=1400)
             total_cost += c2
             drafts = []
             for d in (dr.get("drafts") or [])[:DRAFTS_PER_CALL]:

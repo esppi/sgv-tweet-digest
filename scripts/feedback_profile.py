@@ -188,8 +188,9 @@ Constraints:
   - No em dashes anywhere in your output (use commas/periods/'and')"""
 
 
-def sonnet_recommend(client, stats, matched, baseline):
-    """One Sonnet call to produce recommendations."""
+def sonnet_recommend(stats, matched, baseline):
+    """One LLM call to produce recommendations (provider/model per config
+    'backends.feedback_profile')."""
     user_msg = (
         f"BASELINE engagement (avg across all our tweets, last {LOOKBACK_DAYS}d): {baseline}\n\n"
         f"PER-ARCHETYPE STATS ({len(stats)} archetypes):\n"
@@ -210,32 +211,17 @@ def sonnet_recommend(client, stats, matched, baseline):
     } for m in matched[:30]], indent=2)
     user_msg += "\n\nReturn the JSON, nothing else."
 
-    resp = client.messages.create(
-        model=_sonnet_model(),
-        max_tokens=1200,
-        system=[{"type": "text", "text": _sonnet_system(), "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": user_msg}],
-    )
-    if getattr(resp, "stop_reason", None) == "max_tokens":
-        raise RuntimeError("Sonnet output truncated at max_tokens — JSON would be invalid")
-    # First TEXT block (newer models may emit a thinking block at content[0])
-    raw = next((b.text for b in resp.content if getattr(b, "type", "") == "text"), "").strip()
+    import llm_backend
+    raw, usage, cost = llm_backend.chat(
+        stage="feedback_profile", system_text=_sonnet_system(), user_text=user_msg,
+        max_tokens=1600, default_model=_sonnet_model())
     if raw.startswith("```"):
         import re
         raw = re.sub(r"^```(?:json)?\n?|\n?```$", "", raw)
-    parsed = json.loads(raw)
-    usage = {
-        "input_tokens": resp.usage.input_tokens,
-        "output_tokens": resp.usage.output_tokens,
-        "cache_creation_input_tokens": getattr(resp.usage, "cache_creation_input_tokens", 0),
-        "cache_read_input_tokens": getattr(resp.usage, "cache_read_input_tokens", 0),
-    }
-    cost = (
-        usage["input_tokens"] * 3 / 1_000_000
-        + usage["output_tokens"] * 15 / 1_000_000
-        + usage["cache_creation_input_tokens"] * 3.75 / 1_000_000
-        + usage["cache_read_input_tokens"] * 0.30 / 1_000_000
-    )
+    start = raw.find("{")
+    if start < 0:
+        raise RuntimeError("feedback_profile: no JSON object in model output")
+    parsed, _ = json.JSONDecoder().raw_decode(raw[start:])
     return parsed, cost
 
 
@@ -316,13 +302,9 @@ def run(lookback_days=LOOKBACK_DAYS, verbose=True):
         return {"matched_tweets": len(matched), "cost_usd": 0, "profile_id": rid,
                 "duration_s": round(duration, 1)}
 
-    # Sonnet call
-    import anthropic
-    client = anthropic.Anthropic(api_key=_anthropic_api_key())
-
-    log(f"  calling Sonnet for recommendations...")
+    log(f"  calling LLM for recommendations...")
     try:
-        recs, cost = sonnet_recommend(client, stats, matched, baseline)
+        recs, cost = sonnet_recommend(stats, matched, baseline)
     except Exception as e:
         log(f"  Sonnet failed: {e}")
         return {"matched_tweets": len(matched), "cost_usd": 0, "error": str(e),
