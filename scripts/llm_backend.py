@@ -47,7 +47,7 @@ _PRICES = [
     ("aster",     "kimi-k3",       2.80, 15.00, 0.00, 0.28),
     (None,        "kimi-k3",       3.00, 15.00, 0.00, 0.30),
     ("aster",     "glm-5.2",       1.00,  4.00, 0.00, 0.20),
-    (None,        "glm-5.2",       0.70,  2.20, 0.00, 0.13),   # OR promo book
+    (None,        "glm-5.2",       0.49,  1.54, 0.00, 0.10),   # OR Z.AI promo (2026-08-25)
     ("aster",     "gpt-oss-120b",  0.15,  0.60, 0.00, 0.00),
     (None,        "gpt-oss-120b",  0.03,  0.17, 0.00, 0.00),
     (None,        "deepseek",      0.14,  0.28, 0.00, 0.028),
@@ -152,10 +152,14 @@ def _openai_chat(base, api_key, model, system_text, user_text, max_tokens,
     if or_provider:
         payload["provider"] = or_provider
     if nothink:
-        # vLLM-style thinking toggle (verified on Aster GLM: 8x fewer output
-        # tokens). Reasoning burn otherwise exceeds Aster's ~300s gateway
-        # wall on large calls.
-        payload["chat_template_kwargs"] = {"enable_thinking": False}
+        if base == OPENROUTER_OPENAI_BASE:
+            # OpenRouter's unified reasoning control (vLLM kwargs don't pass through)
+            payload["reasoning"] = {"enabled": False}
+        else:
+            # vLLM-style thinking toggle (verified on Aster GLM: 8x fewer output
+            # tokens). Reasoning burn otherwise exceeds Aster's ~300s gateway
+            # wall on large calls.
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
     if stream:
         # Streaming keeps bytes flowing from the first token, so serverless
         # gateways (Aster 504s buffered responses at ~5 min) don't kill slow
@@ -262,7 +266,8 @@ def chat(stage, system_text, user_text, max_tokens, default_model):
         else:
             text, usage = _openai_chat(
                 OPENROUTER_OPENAI_BASE, key, model, system_text, user_text,
-                max_tokens, json_mode=json_mode, or_provider=or_provider)
+                max_tokens, json_mode=json_mode, or_provider=or_provider,
+                nothink=bool(b.get("nothink")))
     elif provider == "aster":
         key = os.environ.get("ASTER_API_KEY")
         if not key:
