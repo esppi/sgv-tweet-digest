@@ -10,7 +10,9 @@ Cost model: per X API per-resource pricing.
   Daily run cost: ~$0.10 (20 tweets total across both accounts)
   Backfill (14d, ~50 tweets/account): ~$0.50 one-time
 
-Credentials are inherited from gather_x (X_BEARER_TOKEN + X_OAUTH2_* env vars).
+Credentials are inherited from gather_x. X API credentials remain the default,
+but SGV_X_READ_BACKEND=hermes/xquik can use HERMES_TWEET_API_KEY or XQUIK_API_KEY
+for public user-timeline reads.
 The two own-account user IDs are read from the operator config (config.example.json
 shape) — see gather_x.load_config / SGV_CONFIG.
 
@@ -25,7 +27,8 @@ sys.path.insert(0, HERE)
 import feedback_db as db
 
 # Bearer (app-only) + OAuth2 user-context token fn come from the gather script.
-from gather_x import bearer_token, _oauth2_access_token, load_config
+from gather_x import bearer_token, _has_x_credentials, _oauth2_access_token, load_config
+from hermes_tweet_client import fetch_hermes_user_tweets, hermes_read_backend_enabled
 
 # User IDs from the operator config
 _CFG = load_config()
@@ -46,6 +49,10 @@ TWEET_FIELDS = "created_at,public_metrics,referenced_tweets,conversation_id,lang
 # HTTP
 # ─────────────────────────────────────────
 _OAUTH2_TOKEN_CACHED = None
+
+
+def _use_hermes_reads():
+    return hermes_read_backend_enabled(_has_x_credentials())
 
 
 def _bearer():
@@ -113,6 +120,12 @@ def _get(url, retries=3):
 def fetch_user_tweets(account, user_id, max_results=10, since_id=None,
                      start_time=None, pagination_token=None):
     """Fetch one page of tweets from /2/users/<id>/tweets. Returns (data_list, meta_dict)."""
+    if _use_hermes_reads():
+        return fetch_hermes_user_tweets(
+            user_id,
+            max_results=max_results,
+            pagination_token=pagination_token,
+        )
     params = {
         "max_results": str(max(5, min(100, max_results))),  # X API min=5, max=100
         "tweet.fields": TWEET_FIELDS,

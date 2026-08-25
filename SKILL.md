@@ -43,7 +43,9 @@ the operator through setup rather than guessing.
    `TELEGRAM_SESSION`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_DELIVERY_CHAT_SGV`,
    `TELEGRAM_DELIVERY_CHAT_MIST`, `VENV_PYTHON`. Optional:
    `SHOAL_CHANNEL`, `NOTION_TOKEN` + `NOTION_DEALS_DB_ID`, `GMAIL_ACCOUNT` +
-   `SGV_ADMIN_EMAIL`. These are the ONLY names the scripts read — use them verbatim.
+   `SGV_ADMIN_EMAIL`, and `SGV_X_READ_BACKEND=hermes` with
+   `HERMES_TWEET_API_KEY` or `XQUIK_API_KEY` for the optional Hermes Tweet /
+   Xquik public read backend. These are the ONLY names the scripts read — use them verbatim.
 2. **Config** copied and filled: `cp ${CLAUDE_SKILL_DIR}/config.example.json` to your
    real config and set your two X user ids/handles, followed List ids, model ids, and
    cost/score knobs. The shipped JSON files (`config.example.json`, `voice_profiles.json`,
@@ -75,6 +77,12 @@ token. Writes owned-reads `latest.json` + `state.json` to the state dir. Stdlib-
 ```bash
 python3 ${CLAUDE_SKILL_DIR}/scripts/gather_x.py
 ```
+
+By default Stage A uses the X API credentials above. If you set
+`SGV_X_READ_BACKEND=hermes` (or `xquik`) plus `HERMES_TWEET_API_KEY` /
+`XQUIK_API_KEY`, the public list tweets, list members, and following reads use
+Hermes Tweet / Xquik instead. `auto` uses Hermes only when X credentials are
+absent. Keep X OAuth2 for private or OAuth-only X workflows.
 
 ### Stage B — snapshot your own tweets' metrics  (`our_tweets_fetcher.py`, ~12:30 UTC)
 Snapshots the public engagement metrics of your two own accounts' recent tweets into
