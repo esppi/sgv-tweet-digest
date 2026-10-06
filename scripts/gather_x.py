@@ -84,7 +84,8 @@ MEMBERS_REFRESH_DAYS = 30      # only relevant if FETCH_LIST_MEMBERS=True
 # Following: refreshed DAILY as P2, capped at 200 most recent follows.
 # 200 x $0.001 = $0.20/day. Tier-0 boost surface tracks current attention tightly.
 FOLLOWING_MAX_RESULTS = 200
-FOLLOWING_REFRESH_DAYS = 1     # daily refresh; X returns reverse-chronological so we get the 200 most recent
+FOLLOWING_REFRESH_DAYS = 7     # weekly refresh: follows barely change day to day, the daily
+                               # 200-user lookup was ~23% of X spend, and scoring only needs ids
 
 # Per-endpoint cost estimates (User tier = $0.01/call per dashboard observation).
 # Conservative: assume per-CALL billing. If real billing turns out per-tweet,
